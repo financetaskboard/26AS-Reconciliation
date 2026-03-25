@@ -245,7 +245,7 @@ app.post('/api/odoo/sync-tds', async (req, res) => {
     
     // Step 1: Authenticate
     const uid = await odooAuth(url, database, username, apiKey);
-    if (!uid) return res.json({ ok: false, error: 'Authentication failed' });
+    if (!uid || typeof uid !== 'number') return res.json({ ok: false, error: 'Authentication failed — UID not a number' });
 
     // Step 2: Lookup account IDs
     const tdsAccId = await odooSearchOne(url, database, uid, apiKey, 'account.account', [['code', '=', tdsAccountCode || '231110']]);
@@ -315,10 +315,7 @@ app.post('/api/odoo/sync-tds', async (req, res) => {
       odooCompany: l.company_id?.[1] || ''
     }));
 
-    // ✅ FIX: Save synced data to Firebase so it persists after refresh
-    await fbSave('tds_books', data);
-
-    console.log(`✅ TDS Sync: ${data.length} records saved to Firebase (from ${tdsLineIds.length} total)`);
+    console.log(`✅ TDS Sync: ${data.length} records (from ${tdsLineIds.length} total)`);
     res.json({ ok: true, count: data.length, total: tdsLineIds.length, data });
   } catch (e) {
     console.error('❌ TDS sync error:', e.message);
@@ -380,7 +377,7 @@ function parseStructArray(xml) {
   let match;
   while ((match = structPattern.exec(xml)) !== null) {
     const obj = {};
-    const memberPattern = /<member>\s*<name>([\s\S]*?)<\/name>\s*<value>([\s\S]*?)<\/value>\s*<\/member>/g;
+    const memberPattern = /<member>\s*<name>([\s\S]*?)<\/n>\s*<value>([\s\S]*?)<\/value>\s*<\/member>/g;
     let mMatch;
     while ((mMatch = memberPattern.exec(match[1])) !== null) {
       const name = mMatch[1].trim();
@@ -435,7 +432,28 @@ async function odooCall(url, endpoint, body) {
 
 async function odooAuth(url, database, username, apiKey) {
   const body = buildXMLRPC('authenticate', [database, username, apiKey, {}]);
-  return await odooCall(url, '/xmlrpc/2/common', body);
+  const fullUrl = url.replace(/\/$/, '') + '/xmlrpc/2/common';
+  const response = await fetch(fullUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/xml' },
+    body
+  });
+  const text = await response.text();
+
+  // Check for fault
+  const faultMatch = text.match(/<fault>[\s\S]*?<string>([\s\S]*?)<\/string>/);
+  if (faultMatch) throw new Error(`Odoo auth fault: ${faultMatch[1]}`);
+
+  // Authenticate returns a single <int> (the UID) or <boolean>0</boolean> for failure
+  const boolMatch = text.match(/<boolean>([01])<\/boolean>/);
+  if (boolMatch && boolMatch[1] === '0') throw new Error('Authentication failed — check credentials');
+
+  const uidMatch = text.match(/<int>(\d+)<\/int>/);
+  if (!uidMatch) throw new Error('Authentication failed — no UID returned');
+
+  const uid = parseInt(uidMatch[1], 10);
+  if (isNaN(uid) || uid <= 0) throw new Error('Authentication failed — invalid UID');
+  return uid;
 }
 
 async function odooSearch(url, database, uid, apiKey, model, domain) {
