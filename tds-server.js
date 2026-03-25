@@ -227,7 +227,7 @@ app.post('/api/odoo/test', async (req, res) => {
     });
     const text = await response.text();
     // Check if we got a valid UID (not false/nil)
-    const uidMatch = text.match(/<int>(\d+)<\/int>/);
+    const uidMatch = text.match(/<(?:int|i4)>(\d+)<\/(?:int|i4)>/);
     if (uidMatch) {
       res.json({ ok: true, uid: parseInt(uidMatch[1]), message: `Connected as UID ${uidMatch[1]}` });
     } else {
@@ -351,7 +351,7 @@ function parseXMLResponse(text) {
   // Extract values
   const values = [];
   // Handle array of integers (search results)
-  const intMatches = [...text.matchAll(/<int>(-?\d+)<\/int>/g)];
+  const intMatches = [...text.matchAll(/<(?:int|i4)>(-?\d+)<\/(?:int|i4)>/g)];
   const doubleMatches = [...text.matchAll(/<double>([\d.]+)<\/double>/g)];
   const stringMatches = [...text.matchAll(/<string>([\s\S]*?)<\/string>/g)];
   
@@ -391,7 +391,7 @@ function parseStructArray(xml) {
 
 function parseSimpleValue(valXml) {
   let m;
-  if ((m = valXml.match(/<int>(-?\d+)<\/int>/))) return parseInt(m[1]);
+  if ((m = valXml.match(/<(?:int|i4)>(-?\d+)<\/(?:int|i4)>/))) return parseInt(m[1]);
   if ((m = valXml.match(/<double>([\d.-]+)<\/double>/))) return parseFloat(m[1]);
   if ((m = valXml.match(/<boolean>([01])<\/boolean>/))) return m[1] === '1';
   if (valXml.includes('<nil/>')) return null;
@@ -445,10 +445,10 @@ async function odooAuth(url, database, username, apiKey) {
   if (faultMatch) throw new Error(`Odoo auth fault: ${faultMatch[1]}`);
 
   // Authenticate returns a single <int> (the UID) or <boolean>0</boolean> for failure
-  const boolMatch = text.match(/<boolean>([01])<\/boolean>/);
+  const boolMatch = text.match(/<(?:boolean|bool)>([01])<\/(?:boolean|bool)>/);
   if (boolMatch && boolMatch[1] === '0') throw new Error('Authentication failed — check credentials');
 
-  const uidMatch = text.match(/<int>(\d+)<\/int>/);
+  const uidMatch = text.match(/<(?:int|i4)>(\d+)<\/(?:int|i4)>/);
   if (!uidMatch) throw new Error('Authentication failed — no UID returned');
 
   const uid = parseInt(uidMatch[1], 10);
