@@ -2252,8 +2252,22 @@ export default function App() {
 
   // ── LOAD FROM STORE ON MOUNT ────────────────────────────────────────────────
   useEffect(() => {
-    if (!isElectron) { initialLoadDone.current = true; return; }
     async function loadSaved() {
+      // Web: try pulling from Firebase server first
+      if (isWeb && SERVER_BASE) {
+        try {
+          const res = await fetch(`${SERVER_BASE}/api/state`);
+          const json = await res.json();
+          if (json.ok && json.state) {
+            Object.keys(json.state).forEach(k => {
+              if (json.state[k] !== undefined) {
+                try { localStorage.setItem(k, JSON.stringify(json.state[k])); } catch(e) {}
+              }
+            });
+            console.log('🌐 Pulled state from Firebase server');
+          }
+        } catch(e) { console.warn('Server pull failed, using localStorage:', e); }
+      }
       try {
         const [savedCompanies, savedSelCompanyId, savedSelYear, savedTanEmails] = await Promise.all([
           loadFromStore('companies'),
@@ -2344,7 +2358,7 @@ export default function App() {
 
   // ── AUTO-SAVE ON EVERY DATA CHANGE ─────────────────────────────────────────
   useEffect(() => {
-    if (!isElectron || !loadDone) return;
+    if (!loadDone) return;
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     setStorageStatus("saving");
     saveTimerRef.current = setTimeout(async () => {
@@ -3682,7 +3696,7 @@ export default function App() {
           </div>
 
           {/* SAVE STATUS BANNER */}
-          {isElectron && (storageStatus==="saving" || (storageStatus==="saved" && lastSaved)) && (
+          {(storageStatus==="saving" || (storageStatus==="saved" && lastSaved)) && (
             <div className={`sv-banner${storageStatus==="saving"?" saving":""}`}>
               <div className={`sv-dot${storageStatus==="saving"?" saving":""}`}/>
               {storageStatus==="saving" ? "Saving data…" : `💾 Auto-saved · ${lastSaved}`}
