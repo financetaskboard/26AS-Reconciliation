@@ -315,7 +315,10 @@ app.post('/api/odoo/sync-tds', async (req, res) => {
       odooCompany: l.company_id?.[1] || ''
     }));
 
-    console.log(`✅ TDS Sync: ${data.length} records (from ${tdsLineIds.length} total)`);
+    // ✅ FIX: Save synced data to Firebase so it persists after refresh
+    await fbSave('tds_books', data);
+
+    console.log(`✅ TDS Sync: ${data.length} records saved to Firebase (from ${tdsLineIds.length} total)`);
     res.json({ ok: true, count: data.length, total: tdsLineIds.length, data });
   } catch (e) {
     console.error('❌ TDS sync error:', e.message);
