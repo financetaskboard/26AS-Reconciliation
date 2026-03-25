@@ -1,0 +1,30 @@
+{
+  "name": "tds-recon-portal",
+  "version": "1.0.0",
+  "description": "26AS TDS Reconciliation Portal with Odoo + Gmail + Firebase",
+  "main": "tds-server.js",
+  "scripts": {
+    "start": "node tds-server.js",
+    "dev": "concurrently \"node tds-server.js\" \"npx vite --port 5173\"",
+    "build": "npx vite build",
+    "postinstall": "npx vite build || true"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.18.2",
+    "firebase-admin": "^12.0.0",
+    "node-fetch": "^2.7.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "xlsx": "^0.18.5",
+    "papaparse": "^5.4.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.2.1",
+    "vite": "^5.1.0",
+    "concurrently": "^8.2.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
