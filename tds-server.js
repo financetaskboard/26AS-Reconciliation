@@ -54,17 +54,48 @@ const sanitizeKey = k => String(k).replace(/[\/\\:]/g, '_');
 async function fbSave(key, value) {
   if (!db) return;
   const sk = sanitizeKey(key), col = db.collection('tds_state');
-  const js = JSON.stringify(value), sz = Buffer.byteLength(js, 'utf8');
-  if (!Array.isArray(value) || sz <= CHUNK_LIMIT) {
+  const js = JSON.stringify(value);
+  const sz = Buffer.byteLength(js, 'utf8');
+  const sizeKB = Math.round(sz / 1024);
+
+  // Small enough for single doc (< 900KB)
+  if (sz <= CHUNK_LIMIT) {
     await col.doc(sk).set({ value, updatedAt: new Date().toISOString() });
+    console.log(`  💾 [${sk}] ${sizeKB} KB`);
     return;
   }
-  const chunks = [];
-  for (let i = 0; i < value.length; i += CHUNK_SIZE) chunks.push(value.slice(i, i + CHUNK_SIZE));
+
+  // Large data: split JSON string into ~800KB text chunks
+  // This works for ANY data type (arrays, objects, nested structures)
+  console.log(`  💾 [${sk}] ${sizeKB} KB — chunking as text...`);
+  const STR_CHUNK = 750000; // ~750KB per chunk (safe under 1MB Firestore limit)
+  const strChunks = [];
+  for (let i = 0; i < js.length; i += STR_CHUNK) {
+    strChunks.push(js.substring(i, i + STR_CHUNK));
+  }
+
+  // Delete old chunks first (in case count changed)
+  try {
+    const oldMeta = await col.doc(sk).get();
+    if (oldMeta.exists && oldMeta.data().chunked) {
+      const oldCount = oldMeta.data().chunkCount || 0;
+      const delBatch = db.batch();
+      for (let i = 0; i < oldCount; i++) delBatch.delete(col.doc(`${sk}_chunk_${i}`));
+      await delBatch.commit();
+    }
+  } catch(e) {}
+
+  // Write new chunks (Firestore batch max 500 ops, we'll be well under)
   const batch = db.batch();
-  batch.set(col.doc(sk), { chunked: true, chunkCount: chunks.length, totalCount: value.length, updatedAt: new Date().toISOString() });
-  chunks.forEach((c, i) => batch.set(col.doc(`${sk}_chunk_${i}`), { items: c }));
+  batch.set(col.doc(sk), {
+    chunked: true, chunkCount: strChunks.length, textMode: true,
+    totalSize: sz, updatedAt: new Date().toISOString()
+  });
+  strChunks.forEach((chunk, i) => {
+    batch.set(col.doc(`${sk}_chunk_${i}`), { text: chunk });
+  });
   await batch.commit();
+  console.log(`  💾 [${sk}] ${sizeKB} KB → ${strChunks.length} text chunks`);
 }
 
 async function fbLoad(key) {
@@ -74,7 +105,18 @@ async function fbLoad(key) {
   if (!meta.exists) return undefined;
   const d = meta.data();
   if (!d.chunked) return d.value;
-  const docs = await Promise.all(Array.from({ length: d.chunkCount }, (_, i) => col.doc(`${sk}_chunk_${i}`).get()));
+
+  const docs = await Promise.all(
+    Array.from({ length: d.chunkCount }, (_, i) => col.doc(`${sk}_chunk_${i}`).get())
+  );
+
+  if (d.textMode) {
+    // Text-mode chunks: reassemble JSON string and parse
+    const jsonStr = docs.map(doc => doc.exists ? (doc.data().text || '') : '').join('');
+    try { return JSON.parse(jsonStr); } catch(e) { console.error('Chunk parse failed for', sk); return undefined; }
+  }
+
+  // Legacy array-mode chunks
   const full = [];
   docs.forEach(doc => { if (doc.exists) full.push(...(doc.data().items || [])); });
   return full;
