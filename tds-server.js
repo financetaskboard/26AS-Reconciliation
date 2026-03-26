@@ -1,19 +1,14 @@
 /**
  * ╔══════════════════════════════════════════════════════════════╗
- * ║   26AS RECONCILIATION PORTAL — Web Server  v1.0              ║
+ * ║   26AS RECONCILIATION PORTAL — Web Server  v2.0              ║
  * ║   Runs on http://localhost:3003  (or Render.com online)      ║
  * ║   Data stored in Firebase Firestore                          ║
  * ╚══════════════════════════════════════════════════════════════╝
  *
- *  Features:
- *    - Odoo XML-RPC proxy (browser can't do CORS XML-RPC directly)
- *    - Gmail OAuth2 flow + API proxy
- *    - Firebase Firestore state persistence
- *    - Team sync (Push/Pull)
- *    - Serves the React app (built via Vite)
- *
- *  LOCAL:   node tds-server.js
- *  RENDER:  Set FIREBASE_SERVICE_ACCOUNT env variable
+ *  v2.0 Changes:
+ *    - Odoo: /jsonrpc endpoint (works with API keys AND passwords)
+ *    - Firebase: key sanitization everywhere (colons → underscores)
+ *    - Gmail: force https redirect_uri on Render
  */
 
 const express  = require('express');
@@ -34,8 +29,13 @@ const distPath = path.join(__dirname, 'dist');
 if (fs.existsSync(distPath)) {
   app.use(express.static(distPath));
 }
-// Also serve from root for dev (index.html etc.)
 app.use(express.static(__dirname));
+
+// ── Helper: get base URL (force https on Render) ─────────────
+function getBaseUrl(req) {
+  const proto = req.headers['x-forwarded-proto'] || req.protocol || 'http';
+  return `${proto}://${req.get('host')}`;
+}
 
 // ══════════════════════════════════════════════════════════════
 //  FIREBASE INITIALISATION
@@ -50,7 +50,7 @@ try {
     const keyPath = path.join(__dirname, 'serviceAccountKey.json');
     if (fs.existsSync(keyPath)) {
       serviceAccount = JSON.parse(fs.readFileSync(keyPath, 'utf8'));
-      console.log(`🔥 Firebase: credentials from serviceAccountKey.json`);
+      console.log('🔥 Firebase: credentials from serviceAccountKey.json');
     }
   }
   if (serviceAccount) {
@@ -60,20 +60,26 @@ try {
     db = admin.firestore();
     console.log('✅ Firebase Firestore connected');
   } else {
-    console.warn('⚠️  No Firebase credentials — data will NOT persist to Firestore.');
+    console.warn('⚠️  No Firebase credentials — data will NOT persist.');
   }
 } catch (e) {
   console.error('❌ Firebase init error:', e.message);
 }
 
 // ══════════════════════════════════════════════════════════════
-//  CHUNKED FIRESTORE HELPERS (same pattern as GST portal)
+//  CHUNKED FIRESTORE HELPERS
 // ══════════════════════════════════════════════════════════════
 const CHUNK_SIZE  = 400;
 const CHUNK_LIMIT = 900000;
 
+// Sanitize keys for Firestore doc IDs (no slashes, colons)
+function sanitizeKey(key) {
+  return String(key).replace(/[\/\\:]/g, '_');
+}
+
 async function fbSave(key, value) {
   if (!db) return;
+  const safeKey = sanitizeKey(key);
   const col = db.collection('tds_state');
   const jsonStr  = JSON.stringify(value);
   const byteSize = Buffer.byteLength(jsonStr, 'utf8');
@@ -81,8 +87,8 @@ async function fbSave(key, value) {
   const needChunk = Array.isArray(value) && byteSize > CHUNK_LIMIT;
 
   if (!needChunk) {
-    await col.doc(key).set({ value, updatedAt: new Date().toISOString() });
-    console.log(`  💾 [${key}] ${sizeKB} KB (single doc)`);
+    await col.doc(safeKey).set({ value, updatedAt: new Date().toISOString() });
+    console.log(`  💾 [${safeKey}] ${sizeKB} KB`);
     return;
   }
 
@@ -91,27 +97,28 @@ async function fbSave(key, value) {
     chunks.push(value.slice(i, i + CHUNK_SIZE));
   }
   const batch = db.batch();
-  batch.set(col.doc(key), {
+  batch.set(col.doc(safeKey), {
     chunked: true, chunkCount: chunks.length,
     totalCount: value.length, updatedAt: new Date().toISOString()
   });
   chunks.forEach((chunk, i) => {
-    batch.set(col.doc(`${key}_chunk_${i}`), { items: chunk });
+    batch.set(col.doc(`${safeKey}_chunk_${i}`), { items: chunk });
   });
   await batch.commit();
-  console.log(`  💾 [${key}] ${sizeKB} KB → ${chunks.length} chunks`);
+  console.log(`  💾 [${safeKey}] ${sizeKB} KB → ${chunks.length} chunks`);
 }
 
 async function fbLoad(key) {
   if (!db) return undefined;
+  const safeKey = sanitizeKey(key);
   const col  = db.collection('tds_state');
-  const meta = await col.doc(key).get();
+  const meta = await col.doc(safeKey).get();
   if (!meta.exists) return undefined;
   const data = meta.data();
   if (!data.chunked) return data.value;
 
   const chunkDocs = await Promise.all(
-    Array.from({ length: data.chunkCount }, (_, i) => col.doc(`${key}_chunk_${i}`).get())
+    Array.from({ length: data.chunkCount }, (_, i) => col.doc(`${safeKey}_chunk_${i}`).get())
   );
   const full = [];
   chunkDocs.forEach(d => { if (d.exists) full.push(...(d.data().items || [])); });
@@ -120,15 +127,16 @@ async function fbLoad(key) {
 
 async function fbDelete(key) {
   if (!db) return;
+  const safeKey = sanitizeKey(key);
   const col  = db.collection('tds_state');
-  const meta = await col.doc(key).get();
+  const meta = await col.doc(safeKey).get();
   if (!meta.exists) return;
   const data = meta.data();
   const batch = db.batch();
-  batch.delete(col.doc(key));
+  batch.delete(col.doc(safeKey));
   if (data.chunked) {
     for (let i = 0; i < data.chunkCount; i++) {
-      batch.delete(col.doc(`${key}_chunk_${i}`));
+      batch.delete(col.doc(`${safeKey}_chunk_${i}`));
     }
   }
   await batch.commit();
@@ -140,7 +148,6 @@ async function fbDelete(key) {
 const STATE_KEYS = [
   'tds_cfg', 'tds_companies', 'tds_26as', 'tds_ais', 'tds_books',
   'tds_recon', 'tds_files', 'tds_tanmaster', 'tds_gmail', 'tds_invoices',
-  // React app stores these keys directly:
   'companies', 'selCompanyId', 'selYear', 'tanEmails', 'emailLog',
   'datasets', 'files', 'reconResults', 'reconDone', 'activeCompanyIndex',
   'tracesCredsMap', 'localBackupFolder', 'driveBackupIndex', 'driveFolderId',
@@ -164,9 +171,18 @@ app.get('/api/state', async (req, res) => {
   }
 });
 
+app.get('/api/state/:key', async (req, res) => {
+  try {
+    const val = await fbLoad(req.params.key);
+    res.json({ ok: true, value: val });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 app.post('/api/state/:key', async (req, res) => {
   try {
-    const key   = req.params.key.replace(/[\/\\:]/g, '_'); // sanitize for Firestore
+    const key   = req.params.key;
     const value = req.body?.value;
     if (value === undefined) return res.status(400).json({ ok: false, error: 'Missing value' });
     await fbSave(key, value);
@@ -185,81 +201,102 @@ app.delete('/api/state', async (req, res) => {
   }
 });
 
-
 // ══════════════════════════════════════════════════════════════
-//  ODOO JSON-RPC PROXY (same approach as GST portal — proven)
-//  Uses /web/session/authenticate + /web/dataset/call_kw
+//  ODOO JSON-RPC PROXY  (uses /jsonrpc endpoint)
+//
+//  /jsonrpc accepts BOTH passwords AND API keys (unlike
+//  /web/session/authenticate which only accepts passwords).
+//  Stateless: credentials passed with every call, no cookies.
 // ══════════════════════════════════════════════════════════════
 
-async function odooAuthenticate(url, database, username, password) {
-  const baseUrl = url.replace(/\/$/, '');
-  const resp = await fetch(`${baseUrl}/web/session/authenticate`, {
+async function odooAuth(baseUrl, database, username, password) {
+  const url = baseUrl.replace(/\/$/, '');
+  const resp = await fetch(`${url}/jsonrpc`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       jsonrpc: '2.0', method: 'call', id: 1,
-      params: { db: database, login: username, password }
+      params: {
+        service: 'common',
+        method: 'authenticate',
+        args: [database, username, password, {}]
+      }
     })
   });
   const data = await resp.json();
-  if (!data.result || !data.result.uid || data.result.uid === false) {
-    const msg = data.result?.message || data.error?.data?.message || 'Invalid credentials';
-    throw new Error(`Authentication failed: ${msg}`);
+  if (data.error) {
+    throw new Error(data.error.data?.message || data.error.message || 'Odoo auth error');
   }
-  const uid = data.result.uid;
-  const cookie = resp.headers.get('set-cookie') || '';
-  const session = { uid, cookie, baseUrl, companyIds: [] };
-  try {
-    const userRec = await odooCall(session, 'res.users', 'read', [[uid]], { fields: ['company_ids', 'company_id'] });
-    const allCoIds = userRec?.[0]?.company_ids || [];
-    if (allCoIds.length) { session.companyIds = allCoIds; }
-    else { const defCo = userRec?.[0]?.company_id?.[0]; if (defCo) session.companyIds = [defCo]; }
-  } catch (e) { console.warn('company fetch failed:', e.message); }
-  return session;
+  const uid = data.result;
+  if (!uid || uid === false) {
+    throw new Error('Authentication failed — check URL, database, login & password/API key');
+  }
+  console.log(`   ✅ Odoo auth OK — UID ${uid}`);
+  return { uid, baseUrl: url, database, password };
 }
 
-async function odooCall(session, model, method, args = [], kwargs = {}) {
-  const resp = await fetch(`${session.baseUrl}/web/dataset/call_kw`, {
+async function odooExecute(session, model, method, args = [], kwargs = {}) {
+  const resp = await fetch(`${session.baseUrl}/jsonrpc`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...(session.cookie ? { Cookie: session.cookie } : {}) },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       jsonrpc: '2.0', method: 'call', id: Math.floor(Math.random() * 99999),
-      params: { model, method, args, kwargs: { context: { lang: 'en_IN', ...(session.companyIds?.length ? { allowed_company_ids: session.companyIds } : {}) }, ...kwargs } }
+      params: {
+        service: 'object',
+        method: 'execute_kw',
+        args: [session.database, session.uid, session.password, model, method, args, kwargs]
+      }
     })
   });
   const data = await resp.json();
-  if (data.error) throw new Error(data.error.data?.message || data.error.message || 'Odoo call failed');
+  if (data.error) {
+    throw new Error(data.error.data?.message || data.error.message || 'Odoo call failed');
+  }
   return data.result;
 }
 
 app.post('/api/odoo/test', async (req, res) => {
   try {
     const { url, db: database, username, apiKey } = req.body;
-    const session = await odooAuthenticate(url, database, username, apiKey);
+    console.log(`\n🔌 Odoo test: ${url} | db=${database} | user=${username}`);
+    const session = await odooAuth(url, database, username, apiKey);
     res.json({ ok: true, uid: session.uid, message: `Connected as UID ${session.uid}` });
-  } catch (e) { res.json({ ok: false, error: e.message }); }
+  } catch (e) {
+    console.error('   ❌ Odoo test:', e.message);
+    res.json({ ok: false, error: e.message });
+  }
 });
 
 app.post('/api/odoo/sync-tds', async (req, res) => {
   try {
     const { url, db: database, username, apiKey, fyStart, fyEnd, tdsAccountCode, debtorAccountCode, prefixes } = req.body;
-    console.log(`\n🔄 TDS Sync: ${fyStart} → ${fyEnd}`);
-    const session = await odooAuthenticate(url, database, username, apiKey);
-    console.log(`   ✅ Auth OK — UID ${session.uid}`);
+    console.log(`\n🔄 TDS Sync: ${url} | db=${database} | ${fyStart} → ${fyEnd}`);
 
-    const tdsAccIds = await odooCall(session, 'account.account', 'search', [[['code', '=', tdsAccountCode || '231110']]]);
-    const debtorAccIds = await odooCall(session, 'account.account', 'search', [[['code', '=', debtorAccountCode || '251000']]]);
+    const session = await odooAuth(url, database, username, apiKey);
+
+    // Lookup account IDs
+    const tdsAccIds = await odooExecute(session, 'account.account', 'search', [
+      [['code', '=', tdsAccountCode || '231110']]
+    ]);
+    const debtorAccIds = await odooExecute(session, 'account.account', 'search', [
+      [['code', '=', debtorAccountCode || '251000']]
+    ]);
     if (!tdsAccIds?.length) return res.json({ ok: false, error: `TDS account (${tdsAccountCode || '231110'}) not found` });
     if (!debtorAccIds?.length) return res.json({ ok: false, error: `Debtor account (${debtorAccountCode || '251000'}) not found` });
     const tdsAccId = tdsAccIds[0], debtorAccId = debtorAccIds[0];
+    console.log(`   TDS acc=${tdsAccId}, Debtor acc=${debtorAccId}`);
 
+    // Fetch TDS lines
     const BATCH = 200;
-    const domain = [['account_id','=',tdsAccId],['date','>=',fyStart],['date','<=',fyEnd],['debit','>',0],['parent_state','=','posted']];
+    const domain = [
+      ['account_id', '=', tdsAccId], ['date', '>=', fyStart], ['date', '<=', fyEnd],
+      ['debit', '>', 0], ['parent_state', '=', 'posted']
+    ];
     const allLines = [];
     let offset = 0;
     while (true) {
-      const batch = await odooCall(session, 'account.move.line', 'search_read', [domain], {
-        fields: ['date','move_id','partner_id','company_id','name','debit','credit','balance'],
+      const batch = await odooExecute(session, 'account.move.line', 'search_read', [domain], {
+        fields: ['date', 'move_id', 'partner_id', 'company_id', 'name', 'debit', 'credit', 'balance'],
         limit: BATCH, offset, order: 'date asc'
       });
       allLines.push(...batch);
@@ -268,47 +305,63 @@ app.post('/api/odoo/sync-tds', async (req, res) => {
       offset += BATCH;
     }
 
+    // Filter by prefixes
     const prefixList = (prefixes || '').split(',').map(p => p.trim().toUpperCase()).filter(Boolean);
     const filtered = prefixList.length > 0
-      ? allLines.filter(l => { const p = (l.name||'').split('/')[0].toUpperCase(); return prefixList.includes(p); })
+      ? allLines.filter(l => { const p = (l.name || '').split('/')[0].toUpperCase(); return prefixList.includes(p); })
       : allLines;
     console.log(`   Filtered: ${filtered.length} of ${allLines.length}`);
 
-    // Enrich with debtor amounts (batch by move_id)
+    // Enrich with debtor amounts
     const moveIds = [...new Set(filtered.map(l => l.move_id?.[0]).filter(Boolean))];
     const invoiceAmounts = {};
     for (let i = 0; i < moveIds.length; i += BATCH) {
       const batchIds = moveIds.slice(i, i + BATCH);
-      const dl = await odooCall(session, 'account.move.line', 'search_read',
-        [[['move_id','in',batchIds],['account_id','=',debtorAccId]]],
-        { fields: ['move_id','credit'] });
-      dl.forEach(d => { const mid = d.move_id?.[0]; if(mid) invoiceAmounts[mid] = (invoiceAmounts[mid]||0) + (d.credit||0); });
+      const dl = await odooExecute(session, 'account.move.line', 'search_read',
+        [[ ['move_id', 'in', batchIds], ['account_id', '=', debtorAccId] ]],
+        { fields: ['move_id', 'credit'] }
+      );
+      dl.forEach(d => {
+        const mid = d.move_id?.[0];
+        if (mid) invoiceAmounts[mid] = (invoiceAmounts[mid] || 0) + (d.credit || 0);
+      });
     }
 
-    const getQ = (d) => { if(!d) return 'Q1'; const m = new Date(d).getMonth()+1; if(m>=4&&m<=6)return'Q1'; if(m>=7&&m<=9)return'Q2'; if(m>=10&&m<=12)return'Q3'; return'Q4'; };
+    // Transform
+    const getQ = (d) => {
+      if (!d) return 'Q1';
+      const m = new Date(d).getMonth() + 1;
+      if (m >= 4 && m <= 6) return 'Q1'; if (m >= 7 && m <= 9) return 'Q2';
+      if (m >= 10 && m <= 12) return 'Q3'; return 'Q4';
+    };
     const data = filtered.map(l => ({
-      deductorName: l.partner_id?.[1]||'', tan: '', amount: invoiceAmounts[l.move_id?.[0]]||0,
-      tdsDeducted: l.debit||0, section: '', date: l.date||'', invoiceNo: l.name||'',
-      quarter: getQ(l.date), source: 'Odoo ERP', journalEntry: l.move_id?.[1]||'', odooCompany: l.company_id?.[1]||''
+      deductorName: l.partner_id?.[1] || '', tan: '',
+      amount: invoiceAmounts[l.move_id?.[0]] || 0, tdsDeducted: l.debit || 0,
+      section: '', date: l.date || '', invoiceNo: l.name || '',
+      quarter: getQ(l.date), source: 'Odoo ERP',
+      journalEntry: l.move_id?.[1] || '', odooCompany: l.company_id?.[1] || ''
     }));
+
     console.log(`✅ TDS Sync: ${data.length} records`);
     res.json({ ok: true, count: data.length, total: allLines.length, data });
-  } catch (e) { console.error('❌ TDS sync error:', e.message); res.status(400).json({ ok: false, error: e.message }); }
+  } catch (e) {
+    console.error('❌ TDS sync error:', e.message);
+    res.status(400).json({ ok: false, error: e.message });
+  }
 });
 
 // ══════════════════════════════════════════════════════════════
 //  GMAIL OAUTH2 + API PROXY
-//  Flow: Client opens Google OAuth popup → gets code → server
-//  exchanges code for tokens → stores refresh_token in Firebase
 // ══════════════════════════════════════════════════════════════
 const GMAIL_SCOPES = 'https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send';
 
-// Step 1: Get OAuth URL
 app.post('/api/gmail/auth-url', (req, res) => {
   const { clientId, redirectUri } = req.body;
+  const callbackUrl = redirectUri || `${getBaseUrl(req)}/api/gmail/callback`;
+  console.log(`📧 Gmail auth-url → redirect: ${callbackUrl}`);
   const params = new URLSearchParams({
     client_id: clientId,
-    redirect_uri: redirectUri || `${req.protocol}://${req.get('host')}/api/gmail/callback`,
+    redirect_uri: callbackUrl,
     response_type: 'code',
     scope: GMAIL_SCOPES,
     access_type: 'offline',
@@ -317,59 +370,51 @@ app.post('/api/gmail/auth-url', (req, res) => {
   res.json({ ok: true, url: `https://accounts.google.com/o/oauth2/v2/auth?${params}` });
 });
 
-// Step 2: Exchange code for tokens
 app.post('/api/gmail/exchange', async (req, res) => {
   try {
     const { code, clientId, clientSecret, redirectUri } = req.body;
+    const callbackUrl = redirectUri || `${getBaseUrl(req)}/api/gmail/callback`;
+    console.log(`📧 Gmail exchange → redirect: ${callbackUrl}`);
     const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({
-        code,
-        client_id: clientId,
-        client_secret: clientSecret,
-        redirect_uri: redirectUri || `${req.protocol}://${req.get('host')}/api/gmail/callback`,
-        grant_type: 'authorization_code'
+        code, client_id: clientId, client_secret: clientSecret,
+        redirect_uri: callbackUrl, grant_type: 'authorization_code'
       })
     });
     const tokens = await tokenRes.json();
+    console.log(`📧 Gmail token response:`, tokens.error || 'OK');
     if (tokens.error) return res.json({ ok: false, error: tokens.error_description || tokens.error });
-    
-    // Save refresh token to Firebase
+
     if (db && tokens.refresh_token) {
       await db.collection('tds_config').doc('gmail_tokens').set({
-        refreshToken: tokens.refresh_token,
-        updatedAt: new Date().toISOString()
+        refreshToken: tokens.refresh_token, updatedAt: new Date().toISOString()
       });
     }
-    
     res.json({ ok: true, accessToken: tokens.access_token, expiresIn: tokens.expires_in, refreshToken: tokens.refresh_token });
   } catch (e) {
+    console.error('📧 Gmail exchange error:', e.message);
     res.json({ ok: false, error: e.message });
   }
 });
 
-// Step 3: Refresh access token
 app.post('/api/gmail/refresh', async (req, res) => {
   try {
     const { clientId, clientSecret, refreshToken } = req.body;
     let token = refreshToken;
-    
-    // If no token provided, load from Firebase
     if (!token && db) {
       const doc = await db.collection('tds_config').doc('gmail_tokens').get();
       if (doc.exists) token = doc.data().refreshToken;
     }
-    if (!token) return res.json({ ok: false, error: 'No refresh token available' });
-    
+    if (!token) return res.json({ ok: false, error: 'No refresh token' });
+
     const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({
-        client_id: clientId,
-        client_secret: clientSecret,
-        refresh_token: token,
-        grant_type: 'refresh_token'
+        client_id: clientId, client_secret: clientSecret,
+        refresh_token: token, grant_type: 'refresh_token'
       })
     });
     const data = await tokenRes.json();
@@ -380,17 +425,13 @@ app.post('/api/gmail/refresh', async (req, res) => {
   }
 });
 
-// Gmail API proxy — list messages, get message, send
 app.post('/api/gmail/api', async (req, res) => {
   try {
     const { accessToken, endpoint, method, body } = req.body;
     const url = `https://gmail.googleapis.com/gmail/v1/users/me/${endpoint}`;
     const opts = {
       method: method || 'GET',
-      headers: {
-        'Authorization': `Bearer ${accessToken}`,
-        'Content-Type': 'application/json'
-      }
+      headers: { 'Authorization': `Bearer ${accessToken}`, 'Content-Type': 'application/json' }
     };
     if (body) opts.body = JSON.stringify(body);
     const response = await fetch(url, opts);
@@ -401,48 +442,37 @@ app.post('/api/gmail/api', async (req, res) => {
   }
 });
 
-// OAuth callback page (opened in popup)
 app.get('/api/gmail/callback', (req, res) => {
   const code = req.query.code;
   const error = req.query.error;
   res.send(`<!DOCTYPE html><html><body><script>
     window.opener && window.opener.postMessage(${JSON.stringify({ type: 'gmail-oauth', code, error })}, '*');
-    window.close();
-  </script><p>${code ? 'Connected! This window will close.' : 'Error: ' + (error || 'unknown')}</p></body></html>`);
+    setTimeout(() => window.close(), 1500);
+  </script><p>${code ? '✅ Connected! This window will close.' : '❌ Error: ' + (error || 'unknown')}</p></body></html>`);
 });
 
 // ══════════════════════════════════════════════════════════════
-//  HEALTH CHECK
+//  HEALTH CHECK + SPA FALLBACK
 // ══════════════════════════════════════════════════════════════
 app.get('/health', (req, res) => {
-  res.json({ ok: true, firebase: !!db, version: '1.0.0' });
+  res.json({ ok: true, firebase: !!db, version: '2.0.0' });
 });
 
-// ── SPA fallback (serve index.html for all non-API routes) ───
 app.get('*', (req, res) => {
   const indexPath = fs.existsSync(path.join(distPath, 'index.html'))
     ? path.join(distPath, 'index.html')
     : path.join(__dirname, 'index.html');
-  if (fs.existsSync(indexPath)) {
-    res.sendFile(indexPath);
-  } else {
-    res.send(`<h2 style="font-family:Segoe UI;padding:40px">26AS Reconciliation Portal — build the React app first: npm run build</h2>`);
-  }
+  if (fs.existsSync(indexPath)) res.sendFile(indexPath);
+  else res.send('<h2 style="font-family:Segoe UI;padding:40px">26AS Reconciliation Portal — run: npm run build</h2>');
 });
 
-// ── Start ────────────────────────────────────────────────────
 app.listen(PORT, () => {
   console.log(`╔══════════════════════════════════════════════════╗`);
-  console.log(`║  26AS RECON PORTAL  v1.0  →  port ${PORT}            ║`);
+  console.log(`║  26AS RECON PORTAL  v2.0  →  port ${PORT}            ║`);
   console.log(`╠══════════════════════════════════════════════════╣`);
-  console.log(`║  Storage : Firebase Firestore                    ║`);
-  console.log(`║  POST /api/odoo/test       — test Odoo login     ║`);
-  console.log(`║  POST /api/odoo/sync-tds   — sync TDS from Odoo  ║`);
-  console.log(`║  POST /api/gmail/auth-url  — Gmail OAuth URL     ║`);
-  console.log(`║  POST /api/gmail/exchange  — exchange OAuth code  ║`);
-  console.log(`║  POST /api/gmail/api       — proxy Gmail API     ║`);
-  console.log(`║  GET  /api/state           — load all state      ║`);
-  console.log(`║  POST /api/state/:key      — save a state key    ║`);
-  console.log(`╚══════════════════════════════════════════════════╝\n`);
-  console.log(`  ➡  Open http://localhost:${PORT}\n`);
+  console.log(`║  Odoo   : /jsonrpc (API key + password)         ║`);
+  console.log(`║  Storage: Firebase Firestore (chunked)          ║`);
+  console.log(`║  Gmail  : OAuth2 + API proxy (https forced)     ║`);
+  console.log(`╚══════════════════════════════════════════════════╝`);
+  console.log(`  ➡  http://localhost:${PORT}\n`);
 });
