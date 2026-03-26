@@ -1316,8 +1316,8 @@ export default function App() {
   const addEmailLog = (entry) => setEmailLog(prev => [entry, ...prev.slice(0,999)]);
 
   // ── GMAIL OAUTH STATE ────────────────────────────────────────────────────────
-  const [gmailClientId, setGmailClientId] = useState(() => localStorage.getItem("gmail_client_id")||"");
-  const [gmailClientSecret, setGmailClientSecret] = useState(() => localStorage.getItem("gmail_client_secret")||"");
+  const [gmailClientId, setGmailClientId] = useState("");
+  const [gmailClientSecret, setGmailClientSecret] = useState("");
   const [gmailClientSecretDraft, setGmailClientSecretDraft] = useState("");
   const [gmailToken, setGmailToken] = useState(null);          // { access_token, expires_at }
   const [gmailUser, setGmailUser] = useState(null);            // { email, name }
@@ -1327,18 +1327,12 @@ export default function App() {
   // ── Load Gmail credentials + token from store on startup ────────────────────
   useEffect(() => {
     (async () => {
-      // Restore credentials
+      // Restore credentials from Firebase
       const storedId = await loadFromStore('gmail_client_id');
       const storedSecret = await loadFromStore('gmail_client_secret');
-      if (storedId && !localStorage.getItem('gmail_client_id')) {
-        localStorage.setItem('gmail_client_id', storedId);
-        setGmailClientId(storedId);
-      }
-      if (storedSecret && !localStorage.getItem('gmail_client_secret')) {
-        localStorage.setItem('gmail_client_secret', storedSecret);
-        setGmailClientSecret(storedSecret);
-      }
-      // Restore access token if still valid (avoids reconnecting every session)
+      if (storedId) setGmailClientId(storedId);
+      if (storedSecret) setGmailClientSecret(storedSecret);
+      // Restore access token if still valid
       const storedToken   = await loadFromStore('gmail_access_token');
       const storedExpiry  = await loadFromStore('gmail_token_expiry');
       const storedEmail   = await loadFromStore('gmail_user_email');
@@ -1394,31 +1388,82 @@ export default function App() {
     // Auto-save draft secret if user typed it but didn't explicitly save
     if (gmailClientSecretDraft.trim() && gmailClientSecretDraft.trim() !== gmailClientSecret) {
       const s = gmailClientSecretDraft.trim();
-      localStorage.setItem("gmail_client_secret", s);
       setGmailClientSecret(s);
-      if (isElectron) saveToStore('gmail_client_secret', s);
+      saveToStore('gmail_client_secret', s);
     }
-    showToast("Opening Google sign-in in your browser…","s");
+    showToast("Opening Google sign-in…","s");
     try {
-      const resp = await window.electronAPI.googleOAuthStart({
-        clientId:     gmailClientId,
-        clientSecret: gmailClientSecretDraft.trim() || gmailClientSecret || undefined,
-        scope: "https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/userinfo.email",
-      });
+      let resp;
+      if (isElectron) {
+        resp = await window.electronAPI.googleOAuthStart({
+          clientId: gmailClientId,
+          clientSecret: gmailClientSecretDraft.trim() || gmailClientSecret || undefined,
+          scope: "https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/userinfo.email",
+        });
+      } else {
+        // Web: OAuth popup flow via server
+        const secret = gmailClientSecretDraft.trim() || gmailClientSecret;
+        const redirectUri = `${SERVER_BASE}/api/gmail/callback`;
+        const params = new URLSearchParams({
+          client_id: gmailClientId,
+          redirect_uri: redirectUri,
+          response_type: 'code',
+          scope: 'https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/userinfo.email',
+          access_type: 'offline',
+          prompt: 'consent'
+        });
+        const authUrl = 'https://accounts.google.com/o/oauth2/v2/auth?' + params.toString();
 
-      // ── Log full response to DevTools console for debugging ──
-      console.log("[Gmail OAuth] Response from main process:", JSON.stringify(resp));
+        // Open popup and wait for callback
+        const oauthResult = await new Promise((resolve) => {
+          const popup = window.open(authUrl, 'Gmail Sign In', 'width=500,height=650,left=200,top=100');
+          const handler = (event) => {
+            if (event.data?.type === 'gmail-oauth') {
+              window.removeEventListener('message', handler);
+              resolve(event.data);
+            }
+          };
+          window.addEventListener('message', handler);
+          setTimeout(() => { window.removeEventListener('message', handler); resolve({ error: 'timeout' }); }, 180000);
+        });
+
+        if (oauthResult.error) {
+          resp = { error: oauthResult.error };
+        } else if (oauthResult.code) {
+          // Exchange code for tokens via server
+          const exchangeRes = await fetch(`${SERVER_BASE}/api/gmail/exchange`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              code: oauthResult.code,
+              clientId: gmailClientId,
+              clientSecret: secret,
+              redirectUri: redirectUri
+            })
+          });
+          const exchangeData = await exchangeRes.json();
+          if (exchangeData.ok) {
+            resp = { access_token: exchangeData.accessToken, expires_in: exchangeData.expiresIn, refresh_token: exchangeData.refreshToken };
+          } else {
+            resp = { error: exchangeData.error };
+          }
+        } else {
+          resp = { error: 'No code received from OAuth popup' };
+        }
+      }
+
+      console.log("[Gmail OAuth] Response:", JSON.stringify(resp));
 
       if(!resp || resp.error){
-        const msg = resp?.error || "Unknown error — check DevTools console (Ctrl+Shift+I)";
+        const msg = resp?.error || "Unknown error";
         setGmailAuthError("❌ " + msg);
-        setShowGmailSetup(true); // re-open modal so error is visible
+        setShowGmailSetup(true);
         showToast("Gmail auth failed: "+msg,"e",8000);
         setGmailConnecting(false);
         return;
       }
       if(!resp.access_token){
-        const msg = "No access_token in response — token exchange may have failed. Check DevTools console.";
+        const msg = "No access_token in response";
         setGmailAuthError("❌ " + msg);
         setShowGmailSetup(true);
         setGmailConnecting(false);
@@ -1427,18 +1472,16 @@ export default function App() {
 
       const token = { access_token: resp.access_token, expires_at: Date.now() + (resp.expires_in||3599)*1000 };
 
-      // ── Persist token to electron-store so it survives app restart ──
-      if(isElectron){
-        await saveToStore('gmail_access_token',  resp.access_token);
-        await saveToStore('gmail_token_expiry',  String(token.expires_at));
-        if(resp.refresh_token) await saveToStore('gmail_refresh_token', resp.refresh_token);
-      }
+      // Persist token to store
+      await saveToStore('gmail_access_token', resp.access_token);
+      await saveToStore('gmail_token_expiry', String(token.expires_at));
+      if(resp.refresh_token) await saveToStore('gmail_refresh_token', resp.refresh_token);
 
       try {
         const ui = await fetch("https://www.googleapis.com/oauth2/v3/userinfo",{headers:{Authorization:"Bearer "+resp.access_token}});
         const ud = await ui.json();
         setGmailUser({email:ud.email||"",name:ud.name||""});
-        if(isElectron && ud.email) await saveToStore('gmail_user_email', ud.email);
+        if(ud.email) await saveToStore('gmail_user_email', ud.email);
       } catch(e){ setGmailUser({email:"",name:""}); }
 
       setGmailToken(token);
@@ -1468,17 +1511,13 @@ export default function App() {
 
   const saveGmailClientId = (id) => {
     const trimmed = id.trim();
-    localStorage.setItem("gmail_client_id", trimmed);
     setGmailClientId(trimmed);
-    // ── Also persist to electron-store so teammates sharing the same build
-    // don't have to re-enter credentials from scratch on a fresh machine ──
-    if (isElectron) saveToStore('gmail_client_id', trimmed);
+    saveToStore('gmail_client_id', trimmed);
     if(gmailClientSecretDraft.trim()){
       const secret = gmailClientSecretDraft.trim();
-      localStorage.setItem("gmail_client_secret", secret);
       setGmailClientSecret(secret);
       setGmailClientSecretDraft("");
-      if (isElectron) saveToStore('gmail_client_secret', secret);
+      saveToStore('gmail_client_secret', secret);
     }
     showToast("Client ID saved","s");
     setShowGmailSetup(false);
@@ -1492,13 +1531,41 @@ export default function App() {
   const connectDrive = async () => {
     const clientId = gmailClientId;
     if (!clientId) { showToast("Set your Google OAuth Client ID in Gmail settings first", "w"); return; }
-    showToast("Opening Google sign-in in your browser…","s");
+    showToast("Opening Google sign-in…","s");
     try {
-      const resp = await window.electronAPI.googleOAuthStart({
-        clientId,
-        clientSecret: gmailClientSecretDraft.trim() || gmailClientSecret || undefined,
-        scope: "https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/userinfo.email",
-      });
+      let resp;
+      if (isElectron) {
+        resp = await window.electronAPI.googleOAuthStart({
+          clientId,
+          clientSecret: gmailClientSecretDraft.trim() || gmailClientSecret || undefined,
+          scope: "https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/userinfo.email",
+        });
+      } else {
+        // Web: popup OAuth
+        const secret = gmailClientSecretDraft.trim() || gmailClientSecret;
+        const redirectUri = `${SERVER_BASE}/api/gmail/callback`;
+        const params = new URLSearchParams({
+          client_id: clientId, redirect_uri: redirectUri, response_type: 'code',
+          scope: 'https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/userinfo.email',
+          access_type: 'offline', prompt: 'consent'
+        });
+        const authUrl = 'https://accounts.google.com/o/oauth2/v2/auth?' + params.toString();
+        const oauthResult = await new Promise((resolve) => {
+          const popup = window.open(authUrl, 'Drive Sign In', 'width=500,height=650');
+          const handler = (event) => { if (event.data?.type === 'gmail-oauth') { window.removeEventListener('message', handler); resolve(event.data); } };
+          window.addEventListener('message', handler);
+          setTimeout(() => { window.removeEventListener('message', handler); resolve({ error: 'timeout' }); }, 180000);
+        });
+        if (oauthResult.error) { resp = { error: oauthResult.error }; }
+        else if (oauthResult.code) {
+          const exRes = await fetch(`${SERVER_BASE}/api/gmail/exchange`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ code: oauthResult.code, clientId, clientSecret: secret, redirectUri })
+          });
+          const exData = await exRes.json();
+          resp = exData.ok ? { access_token: exData.accessToken, expires_in: exData.expiresIn, refresh_token: exData.refreshToken } : { error: exData.error };
+        } else { resp = { error: 'No code' }; }
+      }
       if (resp.error) { showToast("Drive auth failed: " + resp.error, "e"); return; }
       if (isElectron && resp.refresh_token) {
         await window.electronAPI.driveSaveRefreshToken(resp.refresh_token);
@@ -1511,7 +1578,6 @@ export default function App() {
       const token = { access_token: resp.access_token, expires_at: Date.now() + (resp.expires_in || 3599) * 1000 };
       setDriveToken(token);
       driveTokenRef.current = token;
-      localStorage.setItem("drive_enabled", "true");
       setDriveEnabled(true);
       showToast("Google Drive connected ✓ — auto-backup enabled", "s");
       runDriveBackup(token);
@@ -1523,7 +1589,6 @@ export default function App() {
     if (isElectron) await window.electronAPI.driveClearRefreshToken?.();
     setDriveToken(null); setDriveUser(null);
     setDriveEnabled(false);
-    localStorage.setItem("drive_enabled", "false");
     showToast("Google Drive disconnected");
   };
 
