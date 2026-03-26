@@ -92,22 +92,20 @@ const isElectron = typeof window !== 'undefined' && window.electronAPI?.isElectr
 const isWeb = !isElectron;
 const SERVER_BASE = isWeb ? (window.location.protocol === 'file:' ? 'http://localhost:3003' : window.location.origin) : '';
 
-// ── STORAGE HELPERS (electron-store via IPC) ──────────────────────────────────
+// ── STORAGE HELPERS (web: Firebase ONLY via server API, no localStorage) ─────
 async function saveToStore(key, value) {
   try {
     if (isElectron) {
       await window.electronAPI.storeSet(key, value);
-    } else {
-      try { localStorage.setItem(key, JSON.stringify(value)); } catch(e) { console.warn('localStorage full:', e); }
-      if (SERVER_BASE) {
-        fetch(`${SERVER_BASE}/api/state/${encodeURIComponent(key)}`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ value })
-        }).catch(() => {});
-      }
+    } else if (SERVER_BASE) {
+      const res = await fetch(`${SERVER_BASE}/api/state/${encodeURIComponent(key)}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ value })
+      });
+      if (!res.ok) console.warn('Firebase save failed:', key, res.status);
     }
   } catch (e) {
-    console.warn('Store save failed:', e);
+    console.warn('Store save failed:', key, e);
   }
 }
 
@@ -115,12 +113,13 @@ async function loadFromStore(key) {
   try {
     if (isElectron) {
       return await window.electronAPI.storeGet(key);
-    } else {
-      const raw = localStorage.getItem(key);
-      if (raw) return JSON.parse(raw);
+    } else if (SERVER_BASE) {
+      const res = await fetch(`${SERVER_BASE}/api/state/${encodeURIComponent(key)}`);
+      const json = await res.json();
+      if (json.ok && json.value !== undefined) return json.value;
     }
   } catch (e) {
-    console.warn('Store load failed:', e);
+    console.warn('Store load failed:', key, e);
   }
   return null;
 }
@@ -129,50 +128,18 @@ async function clearStore() {
   try {
     if (isElectron) {
       await window.electronAPI.storeClear();
-    } else {
-      const keys = ['companies','selCompanyId','selYear','tanEmails','emailLog',
-        'datasets','files','reconResults','reconDone','activeCompanyIndex',
-        'tds_cfg','tds_companies','tds_26as','tds_books','tds_recon','tds_files','tds_tanmaster','tds_invoices'];
-      keys.forEach(k => localStorage.removeItem(k));
+    } else if (SERVER_BASE) {
+      await fetch(`${SERVER_BASE}/api/state`, { method: 'DELETE' });
     }
   } catch (e) {
     console.warn('Store clear failed:', e);
   }
 }
 
-// ── Web-only: Push/Pull server sync ──────────────────────────
-async function pushAllToServer() {
-  if (!SERVER_BASE) return;
-  const keys = ['companies','selCompanyId','selYear','tanEmails','emailLog',
-    'datasets','files','reconResults','reconDone','activeCompanyIndex',
-    'tds_cfg','tds_companies','tds_26as','tds_books','tds_recon','tds_files','tds_tanmaster','tds_invoices'];
-  for (const k of keys) {
-    const v = localStorage.getItem(k);
-    if (!v) continue;
-    try {
-      await fetch(`${SERVER_BASE}/api/state/${encodeURIComponent(k)}`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ value: JSON.parse(v) })
-      });
-    } catch (e) {}
-  }
-}
-
-async function pullAllFromServer() {
-  if (!SERVER_BASE) return 0;
-  try {
-    const res = await fetch(`${SERVER_BASE}/api/state`);
-    const json = await res.json();
-    if (!json.ok || !json.state) return 0;
-    let count = 0;
-    Object.keys(json.state).forEach(k => {
-      if (json.state[k] !== undefined) {
-        try { localStorage.setItem(k, JSON.stringify(json.state[k])); count++; } catch(e) {}
-      }
-    });
-    return count;
-  } catch (e) { return 0; }
-}
+// ── Web-only: Push/Pull server sync (Firebase direct) ────────
+// Push is used by sidebar button — forces current in-memory state to Firebase
+// (auto-save also does this, but Push is a manual guarantee)
+// Pull reloads the page so loadFromStore fetches everything from Firebase fresh
 
 // ── PARSER: TRACES 26AS TXT (^ delimited format) ─────────────────────────────
 function parse26ASTxt(text) {
@@ -1338,9 +1305,8 @@ export default function App() {
   const [gmailConnecting, setGmailConnecting] = useState(false); // spinner in modal
   const [gmailAuthError, setGmailAuthError]   = useState("");    // error shown inside modal
 
-  // ── Load Gmail credentials + token from electron-store on startup ──────────
+  // ── Load Gmail credentials + token from store on startup ────────────────────
   useEffect(() => {
-    if (!isElectron) return;
     (async () => {
       // Restore credentials
       const storedId = await loadFromStore('gmail_client_id');
@@ -1545,17 +1511,31 @@ export default function App() {
   // Step 3: Silent token refresh via Electron (no popup) — uses stored refresh_token
   const silentlyRefreshDriveToken = async () => {
     if (!gmailClientId) return null;
-    if (!isElectron) return null;
-    const result = await window.electronAPI.driveRefreshAccessToken?.(gmailClientId);
-    if (!result || result.error) return null;
-    const token = { access_token: result.access_token, expires_at: Date.now() + (result.expires_in || 3599) * 1000 };
-    setDriveToken(token);
-    driveTokenRef.current = token;
-    if (!driveUser?.email) {
-      fetch("https://www.googleapis.com/oauth2/v3/userinfo", { headers: { Authorization: "Bearer " + result.access_token } })
-        .then(r => r.json()).then(ud => { if (ud.email) setDriveUser({ email: ud.email }); }).catch(()=>{});
+    if (isElectron) {
+      const result = await window.electronAPI.driveRefreshAccessToken?.(gmailClientId);
+      if (!result || result.error) return null;
+      const token = { access_token: result.access_token, expires_at: Date.now() + (result.expires_in || 3599) * 1000 };
+      setDriveToken(token);
+      driveTokenRef.current = token;
+      if (!driveUser?.email) {
+        fetch("https://www.googleapis.com/oauth2/v3/userinfo", { headers: { Authorization: "Bearer " + result.access_token } })
+          .then(r => r.json()).then(ud => { if (ud.email) setDriveUser({ email: ud.email }); }).catch(()=>{});
+      }
+      return token;
     }
-    return token;
+    // Web: try server-side refresh
+    try {
+      const secret = gmailClientSecret || localStorage.getItem('gmail_client_secret') || '';
+      const res = await fetch(`${SERVER_BASE}/api/gmail/refresh`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ clientId: gmailClientId, clientSecret: secret })
+      });
+      const data = await res.json();
+      if (!data.ok) return null;
+      const token = { access_token: data.accessToken, expires_at: Date.now() + (data.expiresIn || 3599) * 1000 };
+      setDriveToken(token); driveTokenRef.current = token;
+      return token;
+    } catch(e) { return null; }
   };
 
   // ── DRIVE BACKUP ─────────────────────────────────────────────────────────────
@@ -2135,19 +2115,7 @@ export default function App() {
   // ── LOAD FROM STORE ON MOUNT ────────────────────────────────────────────────
   useEffect(() => {
     async function loadSaved() {
-      // Web: pull from Firebase first to populate localStorage
-      if (isWeb && SERVER_BASE) {
-        try {
-          const res = await fetch(`${SERVER_BASE}/api/state`);
-          const json = await res.json();
-          if (json.ok && json.state) {
-            Object.keys(json.state).forEach(k => {
-              try { localStorage.setItem(k, JSON.stringify(json.state[k])); } catch(e) {}
-            });
-            console.log('🌐 Pulled state from Firebase server');
-          }
-        } catch(e) { console.warn('Server pull failed:', e); }
-      }
+      // loadFromStore goes directly to Firebase on web (no localStorage)
       try {
         const [savedCompanies, savedSelCompanyId, savedSelYear, savedTanEmails] = await Promise.all([
           loadFromStore('companies'),
@@ -2568,17 +2536,35 @@ export default function App() {
       
       setOdooSyncProgress({ step: 'auth', message: 'Connecting to Odoo...', count: 0 });
       
-      // Call backend Odoo sync via Electron IPC
-      const result = await window.electronAPI.syncFromOdoo({
-        url: odooCredentials.url,
-        database: odooCredentials.database,
-        username: odooCredentials.username,
-        password: odooCredentials.password,
-        fyStart,
-        fyEnd,
-        companyPrefixes,
-        syncType: odooSyncType
-      });
+      // Call Odoo sync (Electron: IPC, Web: server proxy)
+      let result;
+      if (isElectron) {
+        result = await window.electronAPI.syncFromOdoo({
+          url: odooCredentials.url,
+          database: odooCredentials.database,
+          username: odooCredentials.username,
+          password: odooCredentials.password,
+          fyStart,
+          fyEnd,
+          companyPrefixes,
+          syncType: odooSyncType
+        });
+      } else {
+        // Web: use server proxy
+        setOdooSyncProgress({ step: 'auth', message: 'Connecting via server proxy...', count: 0 });
+        const proxyResult = await syncTDSViaServer({
+          odooUrl: odooCredentials.url,
+          odooDatabase: odooCredentials.database,
+          odooUsername: odooCredentials.username,
+          odooPassword: odooCredentials.password,
+          prefixes: companyPrefixes
+        }, fyStart, fyEnd);
+        if (proxyResult.ok) {
+          result = { success: true, records: proxyResult.data };
+        } else {
+          result = { success: false, error: proxyResult.error };
+        }
+      }
       
       // Show debug log from main process
       if (result.debugLog) {
@@ -3420,8 +3406,20 @@ export default function App() {
           <div className="sb-ft">
             {isWeb && (
               <div style={{display:"flex",gap:4,marginBottom:4}}>
-                <button onClick={async()=>{showToast("Pushing to server…","s");await pushAllToServer();showToast("✅ Pushed to server","s");}} style={{flex:1,padding:"4px 0",fontSize:10,background:"#3a3a3a",color:"#aaa",border:"1px solid #555",borderRadius:3,cursor:"pointer",fontFamily:"inherit"}}>🔼 Push</button>
-                <button onClick={async()=>{showToast("Pulling from server…","s");const c=await pullAllFromServer();if(c>0){showToast(`✅ Pulled ${c} keys — reloading`,"s");setTimeout(()=>location.reload(),800);}else{showToast("Already up to date","s");}}} style={{flex:1,padding:"4px 0",fontSize:10,background:"#3a3a3a",color:"#aaa",border:"1px solid #555",borderRadius:3,cursor:"pointer",fontFamily:"inherit"}}>🔽 Pull</button>
+                <button onClick={async()=>{
+                  showToast("Saving to Firebase…","s");
+                  try {
+                    await Promise.all([
+                      saveToStore('companies', companies),
+                      saveToStore('selCompanyId', selCompanyId),
+                      saveToStore('selYear', selYear),
+                      saveToStore('tanEmails', tanEmails),
+                      saveToStore('emailLog', emailLog),
+                    ]);
+                    showToast("✅ All data saved to Firebase","s");
+                  } catch(e) { showToast("Save failed: "+e.message,"e"); }
+                }} style={{flex:1,padding:"4px 0",fontSize:10,background:"#3a3a3a",color:"#aaa",border:"1px solid #555",borderRadius:3,cursor:"pointer",fontFamily:"inherit"}}>🔼 Push</button>
+                <button onClick={()=>{showToast("Reloading from Firebase…","s");setTimeout(()=>location.reload(),500);}} style={{flex:1,padding:"4px 0",fontSize:10,background:"#3a3a3a",color:"#aaa",border:"1px solid #555",borderRadius:3,cursor:"pointer",fontFamily:"inherit"}}>🔽 Pull</button>
               </div>
             )}
             <div className="sb-ft-t" style={{color:"#3a8a3a",fontSize:9,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{storageStatus==="saved"&&totalRecords>0?`💾 ${totalRecords} records saved`:storageStatus==="saving"?"⏳ Saving…":"Ready"}</div>
