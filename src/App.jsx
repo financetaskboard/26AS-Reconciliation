@@ -89,6 +89,8 @@ async function extractZip(arrayBuffer) {
 
 
 const isElectron = typeof window !== 'undefined' && window.electronAPI?.isElectron;
+const isWeb = !isElectron;
+const SERVER_BASE = isWeb ? (window.location.protocol === 'file:' ? 'http://localhost:3003' : window.location.origin) : '';
 
 // ── STORAGE HELPERS (electron-store via IPC) ──────────────────────────────────
 async function saveToStore(key, value) {
