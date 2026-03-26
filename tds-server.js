@@ -138,16 +138,14 @@ async function fbDelete(key) {
 //  STATE PERSISTENCE API  (/api/state)
 // ══════════════════════════════════════════════════════════════
 const STATE_KEYS = [
-  'tds_cfg',           // Company config, Odoo settings, FY
-  'tds_companies',     // Company master (multi-company)
-  'tds_26as',          // 26AS data (per company)
-  'tds_ais',           // AIS data
-  'tds_books',         // Books/Odoo TDS data
-  'tds_recon',         // Reconciliation results
-  'tds_files',         // Imported file metadata
-  'tds_tanmaster',     // TAN master
-  'tds_gmail',         // Gmail config (tokens stored encrypted)
-  'tds_invoices'       // Invoice-level data
+  'tds_cfg', 'tds_companies', 'tds_26as', 'tds_ais', 'tds_books',
+  'tds_recon', 'tds_files', 'tds_tanmaster', 'tds_gmail', 'tds_invoices',
+  // React app stores these keys directly:
+  'companies', 'selCompanyId', 'selYear', 'tanEmails', 'emailLog',
+  'datasets', 'files', 'reconResults', 'reconDone', 'activeCompanyIndex',
+  'tracesCredsMap', 'localBackupFolder', 'driveBackupIndex', 'driveFolderId',
+  'gmail_client_id', 'gmail_client_secret', 'gmail_access_token',
+  'gmail_token_expiry', 'gmail_refresh_token', 'gmail_user_email'
 ];
 
 app.get('/api/state', async (req, res) => {
@@ -168,7 +166,7 @@ app.get('/api/state', async (req, res) => {
 
 app.post('/api/state/:key', async (req, res) => {
   try {
-    const key   = req.params.key;
+    const key   = req.params.key.replace(/[\/\\:]/g, '_'); // sanitize for Firestore
     const value = req.body?.value;
     if (value === undefined) return res.status(400).json({ ok: false, error: 'Missing value' });
     await fbSave(key, value);
@@ -187,292 +185,116 @@ app.delete('/api/state', async (req, res) => {
   }
 });
 
+
 // ══════════════════════════════════════════════════════════════
-//  ODOO XML-RPC PROXY
-//  Browser can't call Odoo's XML-RPC endpoint due to CORS.
-//  We proxy through our server.
+//  ODOO JSON-RPC PROXY (same approach as GST portal — proven)
+//  Uses /web/session/authenticate + /web/dataset/call_kw
 // ══════════════════════════════════════════════════════════════
 
-// Generic Odoo XML-RPC call
-app.post('/api/odoo/xmlrpc', async (req, res) => {
-  try {
-    const { url, endpoint, body } = req.body;
-    if (!url || !endpoint || !body) {
-      return res.status(400).json({ ok: false, error: 'Missing url, endpoint, or body' });
-    }
-    const fullUrl = url.replace(/\/$/, '') + endpoint;
-    const response = await fetch(fullUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/xml' },
-      body: body
-    });
-    const text = await response.text();
-    res.set('Content-Type', 'text/xml');
-    res.send(text);
-  } catch (e) {
-    console.error('Odoo proxy error:', e.message);
-    res.status(500).json({ ok: false, error: e.message });
+async function odooAuthenticate(url, database, username, password) {
+  const baseUrl = url.replace(/\/$/, '');
+  const resp = await fetch(`${baseUrl}/web/session/authenticate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      jsonrpc: '2.0', method: 'call', id: 1,
+      params: { db: database, login: username, password }
+    })
+  });
+  const data = await resp.json();
+  if (!data.result || !data.result.uid || data.result.uid === false) {
+    const msg = data.result?.message || data.error?.data?.message || 'Invalid credentials';
+    throw new Error(`Authentication failed: ${msg}`);
   }
-});
+  const uid = data.result.uid;
+  const cookie = resp.headers.get('set-cookie') || '';
+  const session = { uid, cookie, baseUrl, companyIds: [] };
+  try {
+    const userRec = await odooCall(session, 'res.users', 'read', [[uid]], { fields: ['company_ids', 'company_id'] });
+    const allCoIds = userRec?.[0]?.company_ids || [];
+    if (allCoIds.length) { session.companyIds = allCoIds; }
+    else { const defCo = userRec?.[0]?.company_id?.[0]; if (defCo) session.companyIds = [defCo]; }
+  } catch (e) { console.warn('company fetch failed:', e.message); }
+  return session;
+}
 
-// Test Odoo connection
+async function odooCall(session, model, method, args = [], kwargs = {}) {
+  const resp = await fetch(`${session.baseUrl}/web/dataset/call_kw`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...(session.cookie ? { Cookie: session.cookie } : {}) },
+    body: JSON.stringify({
+      jsonrpc: '2.0', method: 'call', id: Math.floor(Math.random() * 99999),
+      params: { model, method, args, kwargs: { context: { lang: 'en_IN', ...(session.companyIds?.length ? { allowed_company_ids: session.companyIds } : {}) }, ...kwargs } }
+    })
+  });
+  const data = await resp.json();
+  if (data.error) throw new Error(data.error.data?.message || data.error.message || 'Odoo call failed');
+  return data.result;
+}
+
 app.post('/api/odoo/test', async (req, res) => {
   try {
     const { url, db: database, username, apiKey } = req.body;
-    const authBody = buildXMLRPC('authenticate', [database, username, apiKey, {}]);
-    const response = await fetch(url.replace(/\/$/, '') + '/xmlrpc/2/common', {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/xml' },
-      body: authBody
-    });
-    const text = await response.text();
-    // Check if we got a valid UID (not false/nil)
-    const uidMatch = text.match(/<(?:int|i4)>(\d+)<\/(?:int|i4)>/);
-    if (uidMatch) {
-      res.json({ ok: true, uid: parseInt(uidMatch[1]), message: `Connected as UID ${uidMatch[1]}` });
-    } else {
-      res.json({ ok: false, error: 'Authentication failed — check credentials' });
-    }
-  } catch (e) {
-    res.json({ ok: false, error: e.message });
-  }
+    const session = await odooAuthenticate(url, database, username, apiKey);
+    res.json({ ok: true, uid: session.uid, message: `Connected as UID ${session.uid}` });
+  } catch (e) { res.json({ ok: false, error: e.message }); }
 });
 
-// TDS Sync from Odoo (full flow — authenticate + search + read + transform)
 app.post('/api/odoo/sync-tds', async (req, res) => {
   try {
     const { url, db: database, username, apiKey, fyStart, fyEnd, tdsAccountCode, debtorAccountCode, prefixes } = req.body;
-    
-    // Step 1: Authenticate
-    const uid = await odooAuth(url, database, username, apiKey);
-    if (!uid || typeof uid !== 'number') return res.json({ ok: false, error: 'Authentication failed — UID not a number' });
+    console.log(`\n🔄 TDS Sync: ${fyStart} → ${fyEnd}`);
+    const session = await odooAuthenticate(url, database, username, apiKey);
+    console.log(`   ✅ Auth OK — UID ${session.uid}`);
 
-    // Step 2: Lookup account IDs
-    const tdsAccId = await odooSearchOne(url, database, uid, apiKey, 'account.account', [['code', '=', tdsAccountCode || '231110']]);
-    const debtorAccId = await odooSearchOne(url, database, uid, apiKey, 'account.account', [['code', '=', debtorAccountCode || '251000']]);
-    
-    if (!tdsAccId) return res.json({ ok: false, error: `TDS account (${tdsAccountCode || '231110'}) not found` });
-    if (!debtorAccId) return res.json({ ok: false, error: `Debtor account (${debtorAccountCode || '251000'}) not found` });
+    const tdsAccIds = await odooCall(session, 'account.account', 'search', [[['code', '=', tdsAccountCode || '231110']]]);
+    const debtorAccIds = await odooCall(session, 'account.account', 'search', [[['code', '=', debtorAccountCode || '251000']]]);
+    if (!tdsAccIds?.length) return res.json({ ok: false, error: `TDS account (${tdsAccountCode || '231110'}) not found` });
+    if (!debtorAccIds?.length) return res.json({ ok: false, error: `Debtor account (${debtorAccountCode || '251000'}) not found` });
+    const tdsAccId = tdsAccIds[0], debtorAccId = debtorAccIds[0];
 
-    // Step 3: Search TDS lines
-    const domain = [
-      ['account_id', '=', tdsAccId],
-      ['date', '>=', fyStart],
-      ['date', '<=', fyEnd],
-      ['debit', '>', 0]
-    ];
-    const tdsLineIds = await odooSearch(url, database, uid, apiKey, 'account.move.line', domain);
+    const BATCH = 200;
+    const domain = [['account_id','=',tdsAccId],['date','>=',fyStart],['date','<=',fyEnd],['debit','>',0],['parent_state','=','posted']];
+    const allLines = [];
+    let offset = 0;
+    while (true) {
+      const batch = await odooCall(session, 'account.move.line', 'search_read', [domain], {
+        fields: ['date','move_id','partner_id','company_id','name','debit','credit','balance'],
+        limit: BATCH, offset, order: 'date asc'
+      });
+      allLines.push(...batch);
+      console.log(`   TDS lines offset=${offset} → ${batch.length} (total: ${allLines.length})`);
+      if (batch.length < BATCH) break;
+      offset += BATCH;
+    }
 
-    // Step 4: Read TDS lines
-    const fields = ['date', 'move_id', 'partner_id', 'company_id', 'name', 'account_id', 'debit', 'credit', 'balance'];
-    const tdsLines = await odooRead(url, database, uid, apiKey, 'account.move.line', tdsLineIds, fields);
-
-    // Step 5: Filter by company prefixes
     const prefixList = (prefixes || '').split(',').map(p => p.trim().toUpperCase()).filter(Boolean);
     const filtered = prefixList.length > 0
-      ? tdsLines.filter(l => {
-          const prefix = (l.name || '').split('/')[0].toUpperCase();
-          return prefixList.includes(prefix);
-        })
-      : tdsLines;
+      ? allLines.filter(l => { const p = (l.name||'').split('/')[0].toUpperCase(); return prefixList.includes(p); })
+      : allLines;
+    console.log(`   Filtered: ${filtered.length} of ${allLines.length}`);
 
-    // Step 6: Enrich with invoice amounts (debtor lines)
-    const BATCH = 50;
-    for (let i = 0; i < filtered.length; i += BATCH) {
-      const batch = filtered.slice(i, i + BATCH);
-      await Promise.all(batch.map(async (line) => {
-        try {
-          const debtorIds = await odooSearch(url, database, uid, apiKey, 'account.move.line', [
-            ['move_id', '=', line.move_id[0]],
-            ['account_id', '=', debtorAccId],
-            ['partner_id', '=', line.partner_id[0]]
-          ]);
-          if (debtorIds.length > 0) {
-            const debtorLines = await odooRead(url, database, uid, apiKey, 'account.move.line', [debtorIds[0]], ['credit']);
-            line.invoiceAmount = debtorLines[0]?.credit || 0;
-          } else {
-            line.invoiceAmount = 0;
-          }
-        } catch (e) {
-          line.invoiceAmount = 0;
-        }
-      }));
+    // Enrich with debtor amounts (batch by move_id)
+    const moveIds = [...new Set(filtered.map(l => l.move_id?.[0]).filter(Boolean))];
+    const invoiceAmounts = {};
+    for (let i = 0; i < moveIds.length; i += BATCH) {
+      const batchIds = moveIds.slice(i, i + BATCH);
+      const dl = await odooCall(session, 'account.move.line', 'search_read',
+        [[['move_id','in',batchIds],['account_id','=',debtorAccId]]],
+        { fields: ['move_id','credit'] });
+      dl.forEach(d => { const mid = d.move_id?.[0]; if(mid) invoiceAmounts[mid] = (invoiceAmounts[mid]||0) + (d.credit||0); });
     }
 
-    // Step 7: Transform
     const getQ = (d) => { if(!d) return 'Q1'; const m = new Date(d).getMonth()+1; if(m>=4&&m<=6)return'Q1'; if(m>=7&&m<=9)return'Q2'; if(m>=10&&m<=12)return'Q3'; return'Q4'; };
     const data = filtered.map(l => ({
-      deductorName: l.partner_id?.[1] || '',
-      tan: '',
-      amount: l.invoiceAmount || 0,
-      tdsDeducted: l.debit || 0,
-      section: '',
-      date: l.date || '',
-      invoiceNo: l.name || '',
-      quarter: getQ(l.date),
-      source: 'Odoo ERP',
-      journalEntry: l.move_id?.[1] || '',
-      odooCompany: l.company_id?.[1] || ''
+      deductorName: l.partner_id?.[1]||'', tan: '', amount: invoiceAmounts[l.move_id?.[0]]||0,
+      tdsDeducted: l.debit||0, section: '', date: l.date||'', invoiceNo: l.name||'',
+      quarter: getQ(l.date), source: 'Odoo ERP', journalEntry: l.move_id?.[1]||'', odooCompany: l.company_id?.[1]||''
     }));
-
-    console.log(`✅ TDS Sync: ${data.length} records (from ${tdsLineIds.length} total)`);
-    res.json({ ok: true, count: data.length, total: tdsLineIds.length, data });
-  } catch (e) {
-    console.error('❌ TDS sync error:', e.message);
-    res.status(400).json({ ok: false, error: e.message });
-  }
+    console.log(`✅ TDS Sync: ${data.length} records`);
+    res.json({ ok: true, count: data.length, total: allLines.length, data });
+  } catch (e) { console.error('❌ TDS sync error:', e.message); res.status(400).json({ ok: false, error: e.message }); }
 });
-
-// ── Odoo XML-RPC Helpers ─────────────────────────────────────
-function escXML(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
-
-function serVal(v) {
-  if (v === null || v === undefined) return '<value><nil/></value>';
-  if (typeof v === 'string') return `<value><string>${escXML(v)}</string></value>`;
-  if (typeof v === 'number') return Number.isInteger(v) ? `<value><int>${v}</int></value>` : `<value><double>${v}</double></value>`;
-  if (typeof v === 'boolean') return `<value><boolean>${v?'1':'0'}</boolean></value>`;
-  if (Array.isArray(v)) return `<value><array><data>${v.map(serVal).join('')}</data></array></value>`;
-  if (typeof v === 'object') {
-    const m = Object.entries(v).map(([k,val]) => `<member><name>${escXML(k)}</name>${serVal(val)}</member>`).join('');
-    return `<value><struct>${m}</struct></value>`;
-  }
-  return '<value><nil/></value>';
-}
-
-function buildXMLRPC(method, params) {
-  return `<?xml version="1.0"?><methodCall><methodName>${method}</methodName><params>${params.map(p=>`<param>${serVal(p)}</param>`).join('')}</params></methodCall>`;
-}
-
-function parseXMLResponse(text) {
-  // Simple XML-RPC response parser (server-side)
-  const faultMatch = text.match(/<fault>[\s\S]*?<string>([\s\S]*?)<\/string>/);
-  if (faultMatch) throw new Error(faultMatch[1]);
-  
-  // Extract values
-  const values = [];
-  // Handle array of integers (search results)
-  const intMatches = [...text.matchAll(/<(?:int|i4)>(-?\d+)<\/(?:int|i4)>/g)];
-  const doubleMatches = [...text.matchAll(/<double>([\d.]+)<\/double>/g)];
-  const stringMatches = [...text.matchAll(/<string>([\s\S]*?)<\/string>/g)];
-  
-  // For search results (array of ints)
-  if (text.includes('<array>') && intMatches.length > 0 && !text.includes('<struct>')) {
-    return intMatches.map(m => parseInt(m[1]));
-  }
-  
-  // For single int (authenticate)
-  if (!text.includes('<array>') && intMatches.length === 1 && !text.includes('<struct>')) {
-    return parseInt(intMatches[0][1]);
-  }
-  
-  // For complex responses (structs/read), return raw XML for client parsing
-  // or parse structs server-side
-  return parseStructArray(text);
-}
-
-function parseStructArray(xml) {
-  const results = [];
-  // Split by struct tags
-  const structPattern = /<struct>([\s\S]*?)<\/struct>/g;
-  let match;
-  while ((match = structPattern.exec(xml)) !== null) {
-    const obj = {};
-    const memberPattern = /<member>\s*<name>([\s\S]*?)<\/n>\s*<value>([\s\S]*?)<\/value>\s*<\/member>/g;
-    let mMatch;
-    while ((mMatch = memberPattern.exec(match[1])) !== null) {
-      const name = mMatch[1].trim();
-      const valXml = mMatch[2];
-      obj[name] = parseSimpleValue(valXml);
-    }
-    results.push(obj);
-  }
-  return results;
-}
-
-function parseSimpleValue(valXml) {
-  let m;
-  if ((m = valXml.match(/<(?:int|i4)>(-?\d+)<\/(?:int|i4)>/))) return parseInt(m[1]);
-  if ((m = valXml.match(/<double>([\d.-]+)<\/double>/))) return parseFloat(m[1]);
-  if ((m = valXml.match(/<boolean>([01])<\/boolean>/))) return m[1] === '1';
-  if (valXml.includes('<nil/>')) return null;
-  if ((m = valXml.match(/<string>([\s\S]*?)<\/string>/))) return m[1];
-  // Array — check for nested arrays (e.g. partner_id = [id, "name"])
-  if (valXml.includes('<array>')) {
-    const items = [];
-    const itemPattern = /<value>([\s\S]*?)<\/value>/g;
-    const dataMatch = valXml.match(/<data>([\s\S]*?)<\/data>/);
-    if (dataMatch) {
-      let iMatch;
-      // Parse each value in the array
-      const inner = dataMatch[1];
-      const vals = inner.split('</value>').filter(v => v.includes('<value>'));
-      vals.forEach(v => {
-        const cleaned = v.substring(v.indexOf('<value>')) + '</value>';
-        items.push(parseSimpleValue(cleaned.replace(/^<value>/, '').replace(/<\/value>$/, '')));
-      });
-    }
-    return items;
-  }
-  // Plain text
-  const textMatch = valXml.match(/^([^<]+)$/);
-  if (textMatch) return textMatch[1].trim();
-  return valXml;
-}
-
-async function odooCall(url, endpoint, body) {
-  const fullUrl = url.replace(/\/$/, '') + endpoint;
-  const response = await fetch(fullUrl, {
-    method: 'POST',
-    headers: { 'Content-Type': 'text/xml' },
-    body
-  });
-  const text = await response.text();
-  return parseXMLResponse(text);
-}
-
-async function odooAuth(url, database, username, apiKey) {
-  const body = buildXMLRPC('authenticate', [database, username, apiKey, {}]);
-  const fullUrl = url.replace(/\/$/, '') + '/xmlrpc/2/common';
-  const response = await fetch(fullUrl, {
-    method: 'POST',
-    headers: { 'Content-Type': 'text/xml' },
-    body
-  });
-  const text = await response.text();
-
-  // Check for fault
-  const faultMatch = text.match(/<fault>[\s\S]*?<string>([\s\S]*?)<\/string>/);
-  if (faultMatch) throw new Error(`Odoo auth fault: ${faultMatch[1]}`);
-
-  // Authenticate returns a single <int> (the UID) or <boolean>0</boolean> for failure
-  const boolMatch = text.match(/<(?:boolean|bool)>([01])<\/(?:boolean|bool)>/);
-  if (boolMatch && boolMatch[1] === '0') throw new Error('Authentication failed — check credentials');
-
-  const uidMatch = text.match(/<(?:int|i4)>(\d+)<\/(?:int|i4)>/);
-  if (!uidMatch) throw new Error('Authentication failed — no UID returned');
-
-  const uid = parseInt(uidMatch[1], 10);
-  if (isNaN(uid) || uid <= 0) throw new Error('Authentication failed — invalid UID');
-  return uid;
-}
-
-async function odooSearch(url, database, uid, apiKey, model, domain) {
-  const body = buildXMLRPC('execute_kw', [database, uid, apiKey, model, 'search', [domain]]);
-  const result = await odooCall(url, '/xmlrpc/2/object', body);
-  return Array.isArray(result) ? result : [];
-}
-
-async function odooSearchOne(url, database, uid, apiKey, model, domain) {
-  const ids = await odooSearch(url, database, uid, apiKey, model, domain);
-  return ids.length > 0 ? ids[0] : null;
-}
-
-async function odooRead(url, database, uid, apiKey, model, ids, fields) {
-  if (!ids.length) return [];
-  const body = buildXMLRPC('execute_kw', [database, uid, apiKey, model, 'read', [ids], { fields }]);
-  const result = await odooCall(url, '/xmlrpc/2/object', body);
-  return Array.isArray(result) ? result : [];
-}
 
 // ══════════════════════════════════════════════════════════════
 //  GMAIL OAUTH2 + API PROXY
