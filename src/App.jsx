@@ -141,6 +141,25 @@ async function clearStore() {
 // (auto-save also does this, but Push is a manual guarantee)
 // Pull reloads the page so loadFromStore fetches everything from Firebase fresh
 
+// ── Web-only: Odoo sync via server proxy ─────────────────────
+async function syncTDSViaServer(company, fyStart, fyEnd) {
+  const res = await fetch(`${SERVER_BASE}/api/odoo/sync-tds`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      url: company.odooUrl,
+      db: company.odooDatabase,
+      username: company.odooUsername,
+      apiKey: company.odooPassword,
+      fyStart, fyEnd,
+      tdsAccountCode: '231110',
+      debtorAccountCode: '251000',
+      prefixes: (company.prefixes || []).join(',')
+    })
+  });
+  return res.json();
+}
+
 // ── PARSER: TRACES 26AS TXT (^ delimited format) ─────────────────────────────
 function parse26ASTxt(text) {
   const rows = [];
