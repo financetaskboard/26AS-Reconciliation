@@ -89,21 +89,17 @@ async function extractZip(arrayBuffer) {
 
 
 const isElectron = typeof window !== 'undefined' && window.electronAPI?.isElectron;
-const isWeb = !isElectron;
-const SERVER_BASE = isWeb ? (window.location.protocol === 'file:' ? 'http://localhost:3003' : window.location.origin) : '';
 
-// ── STORAGE HELPERS (web: localStorage + server sync | electron: IPC) ────────
+// ── STORAGE HELPERS (electron-store via IPC) ──────────────────────────────────
 async function saveToStore(key, value) {
   try {
     if (isElectron) {
       await window.electronAPI.storeSet(key, value);
     } else {
-      localStorage.setItem(key, JSON.stringify(value));
-      // Async push to server
+      try { localStorage.setItem(key, JSON.stringify(value)); } catch(e) { console.warn('localStorage full:', e); }
       if (SERVER_BASE) {
         fetch(`${SERVER_BASE}/api/state/${encodeURIComponent(key)}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ value })
         }).catch(() => {});
       }
@@ -132,8 +128,9 @@ async function clearStore() {
     if (isElectron) {
       await window.electronAPI.storeClear();
     } else {
-      const keys = ['tds_cfg','tds_companies','tds_26as','tds_ais','tds_books','tds_recon','tds_files','tds_tanmaster','tds_gmail','tds_invoices',
-        'datasets','files','reconResults','reconDone','companies','activeCompanyIndex'];
+      const keys = ['companies','selCompanyId','selYear','tanEmails','emailLog',
+        'datasets','files','reconResults','reconDone','activeCompanyIndex',
+        'tds_cfg','tds_companies','tds_26as','tds_books','tds_recon','tds_files','tds_tanmaster','tds_invoices'];
       keys.forEach(k => localStorage.removeItem(k));
     }
   } catch (e) {
@@ -144,15 +141,15 @@ async function clearStore() {
 // ── Web-only: Push/Pull server sync ──────────────────────────
 async function pushAllToServer() {
   if (!SERVER_BASE) return;
-  const keys = ['datasets','files','reconResults','reconDone','companies','activeCompanyIndex',
+  const keys = ['companies','selCompanyId','selYear','tanEmails','emailLog',
+    'datasets','files','reconResults','reconDone','activeCompanyIndex',
     'tds_cfg','tds_companies','tds_26as','tds_books','tds_recon','tds_files','tds_tanmaster','tds_invoices'];
   for (const k of keys) {
     const v = localStorage.getItem(k);
     if (!v) continue;
     try {
       await fetch(`${SERVER_BASE}/api/state/${encodeURIComponent(k)}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ value: JSON.parse(v) })
       });
     } catch (e) {}
@@ -168,31 +165,11 @@ async function pullAllFromServer() {
     let count = 0;
     Object.keys(json.state).forEach(k => {
       if (json.state[k] !== undefined) {
-        localStorage.setItem(k, JSON.stringify(json.state[k]));
-        count++;
+        try { localStorage.setItem(k, JSON.stringify(json.state[k])); count++; } catch(e) {}
       }
     });
     return count;
   } catch (e) { return 0; }
-}
-
-// ── Web-only: Odoo sync via server proxy ─────────────────────
-async function syncTDSViaServer(company, fyStart, fyEnd) {
-  const res = await fetch(`${SERVER_BASE}/api/odoo/sync-tds`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      url: company.odooUrl,
-      db: company.odooDatabase,
-      username: company.odooUsername,
-      apiKey: company.odooPassword,
-      fyStart, fyEnd,
-      tdsAccountCode: '231110',
-      debtorAccountCode: '251000',
-      prefixes: (company.prefixes || []).join(',')
-    })
-  });
-  return res.json();
 }
 
 // ── PARSER: TRACES 26AS TXT (^ delimited format) ─────────────────────────────
@@ -1359,8 +1336,9 @@ export default function App() {
   const [gmailConnecting, setGmailConnecting] = useState(false); // spinner in modal
   const [gmailAuthError, setGmailAuthError]   = useState("");    // error shown inside modal
 
-  // ── Load Gmail credentials + token from store on startup ──────────
+  // ── Load Gmail credentials + token from electron-store on startup ──────────
   useEffect(() => {
+    if (!isElectron) return;
     (async () => {
       // Restore credentials
       const storedId = await loadFromStore('gmail_client_id');
@@ -1431,85 +1409,29 @@ export default function App() {
       const s = gmailClientSecretDraft.trim();
       localStorage.setItem("gmail_client_secret", s);
       setGmailClientSecret(s);
-      saveToStore('gmail_client_secret', s);
+      if (isElectron) saveToStore('gmail_client_secret', s);
     }
-    showToast("Opening Google sign-in…","s");
+    showToast("Opening Google sign-in in your browser…","s");
     try {
-      let resp;
-      if (isElectron) {
-        resp = await window.electronAPI.googleOAuthStart({
-          clientId:     gmailClientId,
-          clientSecret: gmailClientSecretDraft.trim() || gmailClientSecret || undefined,
-          scope: "https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/userinfo.email",
-        });
-      } else {
-        // Web: get auth URL from server, open popup, exchange code
-        const secret = gmailClientSecretDraft.trim() || gmailClientSecret;
-        const redirectUri = `${SERVER_BASE}/api/gmail/callback`;
-        const params = new URLSearchParams({
-          client_id: gmailClientId,
-          redirect_uri: redirectUri,
-          response_type: 'code',
-          scope: 'https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/userinfo.email',
-          access_type: 'offline',
-          prompt: 'consent'
-        });
-        const authUrl = 'https://accounts.google.com/o/oauth2/v2/auth?' + params.toString();
-        
-        // Open popup and wait for callback
-        const oauthResult = await new Promise((resolve) => {
-          const popup = window.open(authUrl, 'Gmail Sign In', 'width=500,height=650,left=200,top=100');
-          const handler = (event) => {
-            if (event.data?.type === 'gmail-oauth') {
-              window.removeEventListener('message', handler);
-              resolve(event.data);
-            }
-          };
-          window.addEventListener('message', handler);
-          setTimeout(() => { window.removeEventListener('message', handler); resolve({ error: 'timeout' }); }, 180000);
-        });
-        
-        if (oauthResult.error) {
-          resp = { error: oauthResult.error };
-        } else if (oauthResult.code) {
-          // Exchange code for tokens via server
-          const exchangeRes = await fetch(`${SERVER_BASE}/api/gmail/exchange`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              code: oauthResult.code,
-              clientId: gmailClientId,
-              clientSecret: secret,
-              redirectUri: redirectUri
-            })
-          });
-          const exchangeData = await exchangeRes.json();
-          if (exchangeData.ok) {
-            resp = {
-              access_token: exchangeData.accessToken,
-              expires_in: exchangeData.expiresIn,
-              refresh_token: exchangeData.refreshToken
-            };
-          } else {
-            resp = { error: exchangeData.error };
-          }
-        } else {
-          resp = { error: 'No code received from OAuth popup' };
-        }
-      }
+      const resp = await window.electronAPI.googleOAuthStart({
+        clientId:     gmailClientId,
+        clientSecret: gmailClientSecretDraft.trim() || gmailClientSecret || undefined,
+        scope: "https://www.googleapis.com/auth/gmail.send https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/userinfo.email",
+      });
 
-      console.log("[Gmail OAuth] Response:", JSON.stringify(resp));
+      // ── Log full response to DevTools console for debugging ──
+      console.log("[Gmail OAuth] Response from main process:", JSON.stringify(resp));
 
       if(!resp || resp.error){
-        const msg = resp?.error || "Unknown error";
+        const msg = resp?.error || "Unknown error — check DevTools console (Ctrl+Shift+I)";
         setGmailAuthError("❌ " + msg);
-        setShowGmailSetup(true);
+        setShowGmailSetup(true); // re-open modal so error is visible
         showToast("Gmail auth failed: "+msg,"e",8000);
         setGmailConnecting(false);
         return;
       }
       if(!resp.access_token){
-        const msg = "No access_token in response";
+        const msg = "No access_token in response — token exchange may have failed. Check DevTools console.";
         setGmailAuthError("❌ " + msg);
         setShowGmailSetup(true);
         setGmailConnecting(false);
@@ -1518,16 +1440,18 @@ export default function App() {
 
       const token = { access_token: resp.access_token, expires_at: Date.now() + (resp.expires_in||3599)*1000 };
 
-      // Persist token
-      await saveToStore('gmail_access_token',  resp.access_token);
-      await saveToStore('gmail_token_expiry',  String(token.expires_at));
-      if(resp.refresh_token) await saveToStore('gmail_refresh_token', resp.refresh_token);
+      // ── Persist token to electron-store so it survives app restart ──
+      if(isElectron){
+        await saveToStore('gmail_access_token',  resp.access_token);
+        await saveToStore('gmail_token_expiry',  String(token.expires_at));
+        if(resp.refresh_token) await saveToStore('gmail_refresh_token', resp.refresh_token);
+      }
 
       try {
         const ui = await fetch("https://www.googleapis.com/oauth2/v3/userinfo",{headers:{Authorization:"Bearer "+resp.access_token}});
         const ud = await ui.json();
         setGmailUser({email:ud.email||"",name:ud.name||""});
-        if(ud.email) await saveToStore('gmail_user_email', ud.email);
+        if(isElectron && ud.email) await saveToStore('gmail_user_email', ud.email);
       } catch(e){ setGmailUser({email:"",name:""}); }
 
       setGmailToken(token);
@@ -1561,13 +1485,13 @@ export default function App() {
     setGmailClientId(trimmed);
     // ── Also persist to electron-store so teammates sharing the same build
     // don't have to re-enter credentials from scratch on a fresh machine ──
-    saveToStore('gmail_client_id', trimmed);
+    if (isElectron) saveToStore('gmail_client_id', trimmed);
     if(gmailClientSecretDraft.trim()){
       const secret = gmailClientSecretDraft.trim();
       localStorage.setItem("gmail_client_secret", secret);
       setGmailClientSecret(secret);
       setGmailClientSecretDraft("");
-      saveToStore('gmail_client_secret', secret);
+      if (isElectron) saveToStore('gmail_client_secret', secret);
     }
     showToast("Client ID saved","s");
     setShowGmailSetup(false);
@@ -1581,41 +1505,13 @@ export default function App() {
   const connectDrive = async () => {
     const clientId = gmailClientId;
     if (!clientId) { showToast("Set your Google OAuth Client ID in Gmail settings first", "w"); return; }
-    showToast("Opening Google sign-in…","s");
+    showToast("Opening Google sign-in in your browser…","s");
     try {
-      let resp;
-      if (isElectron) {
-        resp = await window.electronAPI.googleOAuthStart({
-          clientId,
-          clientSecret: gmailClientSecretDraft.trim() || gmailClientSecret || undefined,
-          scope: "https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/userinfo.email",
-        });
-      } else {
-        // Web: popup OAuth
-        const secret = gmailClientSecretDraft.trim() || gmailClientSecret;
-        const redirectUri = `${SERVER_BASE}/api/gmail/callback`;
-        const params = new URLSearchParams({
-          client_id: clientId, redirect_uri: redirectUri, response_type: 'code',
-          scope: 'https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/userinfo.email',
-          access_type: 'offline', prompt: 'consent'
-        });
-        const authUrl = 'https://accounts.google.com/o/oauth2/v2/auth?' + params.toString();
-        const oauthResult = await new Promise((resolve) => {
-          const popup = window.open(authUrl, 'Drive Sign In', 'width=500,height=650');
-          const handler = (event) => { if (event.data?.type === 'gmail-oauth') { window.removeEventListener('message', handler); resolve(event.data); } };
-          window.addEventListener('message', handler);
-          setTimeout(() => { window.removeEventListener('message', handler); resolve({ error: 'timeout' }); }, 180000);
-        });
-        if (oauthResult.error) { resp = { error: oauthResult.error }; }
-        else if (oauthResult.code) {
-          const exRes = await fetch(`${SERVER_BASE}/api/gmail/exchange`, {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ code: oauthResult.code, clientId, clientSecret: secret, redirectUri })
-          });
-          const exData = await exRes.json();
-          resp = exData.ok ? { access_token: exData.accessToken, expires_in: exData.expiresIn, refresh_token: exData.refreshToken } : { error: exData.error };
-        } else { resp = { error: 'No code' }; }
-      }
+      const resp = await window.electronAPI.googleOAuthStart({
+        clientId,
+        clientSecret: gmailClientSecretDraft.trim() || gmailClientSecret || undefined,
+        scope: "https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/userinfo.email",
+      });
       if (resp.error) { showToast("Drive auth failed: " + resp.error, "e"); return; }
       if (isElectron && resp.refresh_token) {
         await window.electronAPI.driveSaveRefreshToken(resp.refresh_token);
@@ -1647,33 +1543,17 @@ export default function App() {
   // Step 3: Silent token refresh via Electron (no popup) — uses stored refresh_token
   const silentlyRefreshDriveToken = async () => {
     if (!gmailClientId) return null;
-    if (isElectron) {
-      const result = await window.electronAPI.driveRefreshAccessToken?.(gmailClientId);
-      if (!result || result.error) return null;
-      const token = { access_token: result.access_token, expires_at: Date.now() + (result.expires_in || 3599) * 1000 };
-      setDriveToken(token);
-      driveTokenRef.current = token;
-      if (!driveUser?.email) {
-        fetch("https://www.googleapis.com/oauth2/v3/userinfo", { headers: { Authorization: "Bearer " + result.access_token } })
-          .then(r => r.json()).then(ud => { if (ud.email) setDriveUser({ email: ud.email }); }).catch(()=>{});
-      }
-      return token;
+    if (!isElectron) return null;
+    const result = await window.electronAPI.driveRefreshAccessToken?.(gmailClientId);
+    if (!result || result.error) return null;
+    const token = { access_token: result.access_token, expires_at: Date.now() + (result.expires_in || 3599) * 1000 };
+    setDriveToken(token);
+    driveTokenRef.current = token;
+    if (!driveUser?.email) {
+      fetch("https://www.googleapis.com/oauth2/v3/userinfo", { headers: { Authorization: "Bearer " + result.access_token } })
+        .then(r => r.json()).then(ud => { if (ud.email) setDriveUser({ email: ud.email }); }).catch(()=>{});
     }
-    // Web: try server-side refresh
-    try {
-      const secret = gmailClientSecret || localStorage.getItem('gmail_client_secret') || '';
-      const res = await fetch(`${SERVER_BASE}/api/gmail/refresh`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ clientId: gmailClientId, clientSecret: secret })
-      });
-      const data = await res.json();
-      if (!data.ok) return null;
-      const token = { access_token: data.accessToken, expires_at: Date.now() + (data.expiresIn || 3599) * 1000 };
-      setDriveToken(token);
-      driveTokenRef.current = token;
-      return token;
-    } catch(e) { return null; }
+    return token;
   };
 
   // ── DRIVE BACKUP ─────────────────────────────────────────────────────────────
@@ -2253,20 +2133,18 @@ export default function App() {
   // ── LOAD FROM STORE ON MOUNT ────────────────────────────────────────────────
   useEffect(() => {
     async function loadSaved() {
-      // Web: try pulling from Firebase server first
+      // Web: pull from Firebase first to populate localStorage
       if (isWeb && SERVER_BASE) {
         try {
           const res = await fetch(`${SERVER_BASE}/api/state`);
           const json = await res.json();
           if (json.ok && json.state) {
             Object.keys(json.state).forEach(k => {
-              if (json.state[k] !== undefined) {
-                try { localStorage.setItem(k, JSON.stringify(json.state[k])); } catch(e) {}
-              }
+              try { localStorage.setItem(k, JSON.stringify(json.state[k])); } catch(e) {}
             });
             console.log('🌐 Pulled state from Firebase server');
           }
-        } catch(e) { console.warn('Server pull failed, using localStorage:', e); }
+        } catch(e) { console.warn('Server pull failed:', e); }
       }
       try {
         const [savedCompanies, savedSelCompanyId, savedSelYear, savedTanEmails] = await Promise.all([
@@ -2688,35 +2566,17 @@ export default function App() {
       
       setOdooSyncProgress({ step: 'auth', message: 'Connecting to Odoo...', count: 0 });
       
-      // Call Odoo sync (Electron: IPC, Web: server proxy)
-      let result;
-      if (isElectron) {
-        result = await window.electronAPI.syncFromOdoo({
-          url: odooCredentials.url,
-          database: odooCredentials.database,
-          username: odooCredentials.username,
-          password: odooCredentials.password,
-          fyStart,
-          fyEnd,
-          companyPrefixes,
-          syncType: odooSyncType
-        });
-      } else {
-        // Web: use server proxy
-        setOdooSyncProgress({ step: 'auth', message: 'Connecting via server proxy...', count: 0 });
-        const proxyResult = await syncTDSViaServer({
-          odooUrl: odooCredentials.url,
-          odooDatabase: odooCredentials.database,
-          odooUsername: odooCredentials.username,
-          odooPassword: odooCredentials.password,
-          prefixes: companyPrefixes
-        }, fyStart, fyEnd);
-        if (proxyResult.ok) {
-          result = { success: true, records: proxyResult.data };
-        } else {
-          result = { success: false, error: proxyResult.error };
-        }
-      }
+      // Call backend Odoo sync via Electron IPC
+      const result = await window.electronAPI.syncFromOdoo({
+        url: odooCredentials.url,
+        database: odooCredentials.database,
+        username: odooCredentials.username,
+        password: odooCredentials.password,
+        fyStart,
+        fyEnd,
+        companyPrefixes,
+        syncType: odooSyncType
+      });
       
       // Show debug log from main process
       if (result.debugLog) {
@@ -3696,7 +3556,7 @@ export default function App() {
           </div>
 
           {/* SAVE STATUS BANNER */}
-          {(storageStatus==="saving" || (storageStatus==="saved" && lastSaved)) && (
+          {isElectron && (storageStatus==="saving" || (storageStatus==="saved" && lastSaved)) && (
             <div className={`sv-banner${storageStatus==="saving"?" saving":""}`}>
               <div className={`sv-dot${storageStatus==="saving"?" saving":""}`}/>
               {storageStatus==="saving" ? "Saving data…" : `💾 Auto-saved · ${lastSaved}`}
