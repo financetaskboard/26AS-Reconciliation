@@ -885,7 +885,7 @@ function copyInv(invNo, btn) {
       
       if (data.ok) {
         const failedDetails = data.results?.filter(r => r.status === 'error').map(r => `• ${r.invoiceNo}: ${r.error}`).join('\n') || '';
-        alert(`✅ Success!\n\nCreated: ${data.created} entries\nFailed: ${data.failed} entries${data.failed > 0 ? `\n\nErrors:\n${failedDetails}` : ''}`);
+        alert(`✅ Success!${data.company ? ` (Company: ${data.company})` : ''}\n\nCreated: ${data.created} entries\nFailed: ${data.failed} entries${data.failed > 0 ? `\n\nErrors:\n${failedDetails}` : ''}`);
       } else {
         alert(`❌ Error: ${data.error}`);
       }
