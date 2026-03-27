@@ -468,6 +468,107 @@ app.post('/api/odoo/sync-invoices', async (req, res) => {
 });
 
 // ══════════════════════════════════════════════════════════════
+//  ODOO - CREATE JOURNAL ENTRIES (TDS Receivable)
+// ══════════════════════════════════════════════════════════════
+app.post('/api/odoo/create-journal-entries', async (req, res) => {
+  try {
+    const { url, db: database, username, apiKey, entries, journalCode, tdsAccountCode, debtorAccountCode } = req.body;
+    console.log(`📝 Creating ${entries?.length || 0} journal entries in Odoo...`);
+    
+    const session = await odooAuth(url, database, username, apiKey);
+    
+    // Find journal by code (default: TDS Receivable or MISC)
+    const journalIds = await odooCall(session, 'account.journal', 'search', [[['code', '=', journalCode || 'MISC']]]);
+    if (!journalIds.length) {
+      // Try finding by name
+      const journalByName = await odooCall(session, 'account.journal', 'search', [[['name', 'ilike', 'TDS']]]);
+      if (!journalByName.length) throw new Error(`Journal '${journalCode || 'MISC'}' not found. Please create a TDS journal in Odoo.`);
+      journalIds.push(journalByName[0]);
+    }
+    const journalId = journalIds[0];
+    
+    // Find accounts
+    const tdsAccIds = await odooCall(session, 'account.account', 'search', [[['code', '=', tdsAccountCode || '231110']]]);
+    const debtorAccIds = await odooCall(session, 'account.account', 'search', [[['code', '=', debtorAccountCode || '251000']]]);
+    
+    if (!tdsAccIds.length) throw new Error(`TDS Account '${tdsAccountCode || '231110'}' not found in Odoo`);
+    if (!debtorAccIds.length) throw new Error(`Debtor Account '${debtorAccountCode || '251000'}' not found in Odoo`);
+    
+    const tdsAccountId = tdsAccIds[0];
+    const debtorAccountId = debtorAccIds[0];
+    
+    const results = [];
+    
+    for (const entry of entries) {
+      try {
+        // Find partner by external ID or name
+        let partnerId = null;
+        if (entry.partnerExternalId) {
+          const partnerIds = await odooCall(session, 'ir.model.data', 'search_read', 
+            [[['name', '=', entry.partnerExternalId], ['model', '=', 'res.partner']]], 
+            { fields: ['res_id'], limit: 1 }
+          );
+          if (partnerIds.length) partnerId = partnerIds[0].res_id;
+        }
+        if (!partnerId && entry.partnerName) {
+          const partnerIds = await odooCall(session, 'res.partner', 'search', [[['name', 'ilike', entry.partnerName]]], { limit: 1 });
+          if (partnerIds.length) partnerId = partnerIds[0];
+        }
+        
+        // Create journal entry
+        const moveVals = {
+          journal_id: journalId,
+          date: entry.date,
+          ref: entry.invoiceNo || `TDS Entry - ${entry.date}`,
+          line_ids: [
+            [0, 0, {
+              account_id: tdsAccountId,
+              partner_id: partnerId,
+              name: entry.invoiceNo || 'TDS Receivable',
+              debit: entry.amount,
+              credit: 0
+            }],
+            [0, 0, {
+              account_id: debtorAccountId,
+              partner_id: partnerId,
+              name: entry.invoiceNo || 'TDS Receivable',
+              debit: 0,
+              credit: entry.amount
+            }]
+          ]
+        };
+        
+        const moveId = await odooCall(session, 'account.move', 'create', [moveVals]);
+        
+        // Try to post the entry (make it official)
+        try {
+          await odooCall(session, 'account.move', 'action_post', [[moveId]]);
+        } catch (postErr) {
+          console.log(`   ⚠ Could not auto-post entry ${moveId}: ${postErr.message}`);
+        }
+        
+        results.push({ invoiceNo: entry.invoiceNo, moveId, status: 'created' });
+        console.log(`   ✅ Created journal entry ${moveId} for ${entry.invoiceNo}`);
+        
+      } catch (entryErr) {
+        results.push({ invoiceNo: entry.invoiceNo, status: 'error', error: entryErr.message });
+        console.log(`   ❌ Failed for ${entry.invoiceNo}: ${entryErr.message}`);
+      }
+    }
+    
+    const created = results.filter(r => r.status === 'created').length;
+    const failed = results.filter(r => r.status === 'error').length;
+    
+    console.log(`✅ Journal Entries: ${created} created, ${failed} failed`);
+    res.json({ ok: true, created, failed, results });
+    
+  } catch (e) {
+    console.error('❌ Create journal entries:', e.message);
+    res.status(400).json({ ok: false, error: e.message });
+  }
+});
+
+// ══════════════════════════════════════════════════════════════
 //  GMAIL OAUTH2
 // ══════════════════════════════════════════════════════════════
 const GMAIL_SCOPES = 'https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.send';
