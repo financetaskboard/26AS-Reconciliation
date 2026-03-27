@@ -416,6 +416,57 @@ app.post('/api/odoo/sync-tds', async (req, res) => {
   }
 });
 
+app.post('/api/odoo/sync-invoices', async (req, res) => {
+  try {
+    const { url, db: database, username, apiKey, fyStart, fyEnd, prefixes } = req.body;
+    console.log(`\n🧾 Invoice Sync: ${url} | ${fyStart} → ${fyEnd}`);
+    const session = await odooAuth(url, database, username, apiKey);
+
+    const prefixList = (prefixes || '').split(',').map(p => p.trim().toUpperCase()).filter(Boolean);
+
+    const BATCH = 200;
+    const domain = [
+      ['move_type', '=', 'out_invoice'],
+      ['state', '=', 'posted'],
+      ['invoice_date', '>=', fyStart],
+      ['invoice_date', '<=', fyEnd]
+    ];
+
+    const allInvoices = [];
+    let offset = 0;
+    while (true) {
+      const batch = await odooCall(session, 'account.move', 'search_read', [domain], {
+        fields: ['name', 'partner_id', 'invoice_date', 'amount_untaxed', 'amount_total', 'id'],
+        limit: BATCH, offset, order: 'invoice_date asc'
+      });
+      allInvoices.push(...batch);
+      console.log(`   Invoices offset=${offset} → ${batch.length} (total: ${allInvoices.length})`);
+      if (batch.length < BATCH) break;
+      offset += BATCH;
+    }
+
+    const filtered = prefixList.length > 0
+      ? allInvoices.filter(inv => prefixList.includes((inv.name || '').split('/')[0].toUpperCase()))
+      : allInvoices;
+    console.log(`   Filtered: ${filtered.length} of ${allInvoices.length}`);
+
+    const data = filtered.map(inv => ({
+      invoiceNo: inv.name || '',
+      invoiceDate: inv.invoice_date || '',
+      partnerName: inv.partner_id?.[1] || '',
+      amountUntaxed: inv.amount_untaxed || 0,
+      amountTotal: inv.amount_total || 0,
+      odooId: inv.id
+    }));
+
+    console.log(`✅ Invoice Sync: ${data.length} records`);
+    res.json({ ok: true, count: data.length, data });
+  } catch (e) {
+    console.error('❌ Invoice sync:', e.message);
+    res.status(400).json({ ok: false, error: e.message });
+  }
+});
+
 // ══════════════════════════════════════════════════════════════
 //  GMAIL OAUTH2
 // ══════════════════════════════════════════════════════════════
