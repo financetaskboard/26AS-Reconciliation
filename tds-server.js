@@ -477,44 +477,69 @@ app.post('/api/odoo/create-journal-entries', async (req, res) => {
     
     const session = await odooAuth(url, database, username, apiKey);
     
-    // Find journal - try multiple approaches
-    let journalId = null;
+    // ALWAYS use Ginesys company
+    const companies = await odooCall(session, 'res.company', 'search_read', 
+      [[['name', 'ilike', 'Ginesys']]], 
+      { fields: ['id', 'name'], limit: 1 }
+    );
     
-    // 1. Try by code if provided
-    if (journalCode) {
-      const journalIds = await odooCall(session, 'account.journal', 'search', [[['code', '=', journalCode]]]);
-      if (journalIds.length) journalId = journalIds[0];
-    }
+    if (!companies.length) throw new Error(`Company 'Ginesys' not found in Odoo`);
     
-    // 2. Try finding journal with name containing 'TDS'
-    if (!journalId) {
-      const tdsjournals = await odooCall(session, 'account.journal', 'search_read', 
-        [[['name', 'ilike', 'TDS']]], 
-        { fields: ['id', 'name', 'code'], limit: 5 }
+    const companyId = companies[0].id;
+    const companyName = companies[0].name;
+    console.log(`   Using company: ${companyName} (ID: ${companyId})`);
+    
+    // Find TDS account in Ginesys company - prefer 25-26 (current FY)
+    let tdsAccounts = await odooCall(session, 'account.account', 'search_read', 
+      [[['code', '=', tdsAccountCode || '231110'], ['company_id', '=', companyId], ['name', 'ilike', '25-26']]], 
+      { fields: ['id', 'company_id', 'name'], limit: 1 }
+    );
+    
+    // Fallback to any account with that code in Ginesys
+    if (!tdsAccounts.length) {
+      tdsAccounts = await odooCall(session, 'account.account', 'search_read', 
+        [[['code', '=', tdsAccountCode || '231110'], ['company_id', '=', companyId]]], 
+        { fields: ['id', 'company_id', 'name'], limit: 1 }
       );
-      console.log('   Found TDS journals:', tdsjournals);
-      if (tdsjournals.length) journalId = tdsjournals[0].id;
     }
     
-    // 3. Try 'Miscellaneous' journal
-    if (!journalId) {
-      const miscJournals = await odooCall(session, 'account.journal', 'search', [[['type', '=', 'general']]]);
-      if (miscJournals.length) journalId = miscJournals[0];
+    if (!tdsAccounts.length) throw new Error(`TDS Account '${tdsAccountCode || '231110'}' not found in Ginesys company`);
+    
+    const tdsAccount = tdsAccounts[0];
+    console.log(`   TDS Account: ${tdsAccount.id} - ${tdsAccount.name}`);
+    
+    // Find debtor account in Ginesys company
+    const debtorAccounts = await odooCall(session, 'account.account', 'search_read', 
+      [[['code', '=', debtorAccountCode || '251000'], ['company_id', '=', companyId]]], 
+      { fields: ['id', 'name'], limit: 1 }
+    );
+    
+    if (!debtorAccounts.length) throw new Error(`Debtor Account '${debtorAccountCode || '251000'}' not found in company ${companyName}`);
+    
+    const debtorAccount = debtorAccounts[0];
+    console.log(`   Debtor Account: ${debtorAccount.id} - ${debtorAccount.name}`);
+    
+    // Find journal in the SAME company (TDS journal)
+    let journalId = null;
+    const tdsJournals = await odooCall(session, 'account.journal', 'search_read', 
+      [[['name', 'ilike', 'TDS'], ['company_id', '=', companyId]]], 
+      { fields: ['id', 'name', 'code'], limit: 5 }
+    );
+    console.log(`   Found TDS journals in ${companyName}:`, tdsJournals);
+    
+    if (tdsJournals.length) {
+      journalId = tdsJournals[0].id;
+    } else {
+      // Fallback to any general journal in that company
+      const generalJournals = await odooCall(session, 'account.journal', 'search_read', 
+        [[['type', '=', 'general'], ['company_id', '=', companyId]]], 
+        { fields: ['id', 'name'], limit: 1 }
+      );
+      if (generalJournals.length) journalId = generalJournals[0].id;
     }
     
-    if (!journalId) throw new Error(`No suitable journal found. Please create a 'TDS Receivable' journal in Odoo.`);
+    if (!journalId) throw new Error(`No suitable journal found in company ${companyName}. Please create a 'TDS Receivable' journal.`);
     console.log(`   Using journal ID: ${journalId}`);
-    
-    // Find accounts
-    const tdsAccIds = await odooCall(session, 'account.account', 'search', [[['code', '=', tdsAccountCode || '231110']]]);
-    const debtorAccIds = await odooCall(session, 'account.account', 'search', [[['code', '=', debtorAccountCode || '251000']]]);
-    
-    if (!tdsAccIds.length) throw new Error(`TDS Account '${tdsAccountCode || '231110'}' not found in Odoo`);
-    if (!debtorAccIds.length) throw new Error(`Debtor Account '${debtorAccountCode || '251000'}' not found in Odoo`);
-    
-    const tdsAccountId = tdsAccIds[0];
-    const debtorAccountId = debtorAccIds[0];
-    console.log(`   TDS Account: ${tdsAccountId}, Debtor Account: ${debtorAccountId}`);
     
     const results = [];
     
@@ -534,34 +559,37 @@ app.post('/api/odoo/create-journal-entries', async (req, res) => {
           if (partnerIds.length) partnerId = partnerIds[0];
         }
         
-        // Create journal entry with proper structure
+        // Create journal entry with correct company_id
         const moveVals = {
+          company_id: companyId,
           journal_id: journalId,
           date: entry.date,
           ref: entry.invoiceNo || `TDS Entry - ${entry.date}`,
           move_type: 'entry',
           line_ids: [
             [0, 0, {
-              account_id: tdsAccountId,
+              account_id: tdsAccount.id,
               partner_id: partnerId,
               name: entry.invoiceNo || 'TDS Receivable',
               debit: entry.amount,
-              credit: 0
+              credit: 0,
+              company_id: companyId
             }],
             [0, 0, {
-              account_id: debtorAccountId,
+              account_id: debtorAccount.id,
               partner_id: partnerId,
               name: entry.invoiceNo || 'TDS Receivable',
               debit: 0,
-              credit: entry.amount
+              credit: entry.amount,
+              company_id: companyId
             }]
           ]
         };
         
-        console.log(`   Creating entry for ${entry.invoiceNo}...`);
+        console.log(`   Creating entry for ${entry.invoiceNo} in ${companyName}...`);
         const moveId = await odooCall(session, 'account.move', 'create', [moveVals]);
         
-        // Try to post the entry (make it official)
+        // Try to post the entry
         try {
           await odooCall(session, 'account.move', 'action_post', [[moveId]]);
           console.log(`   ✅ Created & posted: ${moveId}`);
@@ -581,7 +609,7 @@ app.post('/api/odoo/create-journal-entries', async (req, res) => {
     const failed = results.filter(r => r.status === 'error').length;
     
     console.log(`✅ Journal Entries: ${created} created, ${failed} failed`);
-    res.json({ ok: true, created, failed, results });
+    res.json({ ok: true, created, failed, results, company: companyName });
     
   } catch (e) {
     console.error('❌ Create journal entries:', e.message);
