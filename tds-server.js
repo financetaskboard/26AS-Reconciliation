@@ -477,15 +477,33 @@ app.post('/api/odoo/create-journal-entries', async (req, res) => {
     
     const session = await odooAuth(url, database, username, apiKey);
     
-    // Find journal by code (default: TDS Receivable or MISC)
-    const journalIds = await odooCall(session, 'account.journal', 'search', [[['code', '=', journalCode || 'MISC']]]);
-    if (!journalIds.length) {
-      // Try finding by name
-      const journalByName = await odooCall(session, 'account.journal', 'search', [[['name', 'ilike', 'TDS']]]);
-      if (!journalByName.length) throw new Error(`Journal '${journalCode || 'MISC'}' not found. Please create a TDS journal in Odoo.`);
-      journalIds.push(journalByName[0]);
+    // Find journal - try multiple approaches
+    let journalId = null;
+    
+    // 1. Try by code if provided
+    if (journalCode) {
+      const journalIds = await odooCall(session, 'account.journal', 'search', [[['code', '=', journalCode]]]);
+      if (journalIds.length) journalId = journalIds[0];
     }
-    const journalId = journalIds[0];
+    
+    // 2. Try finding journal with name containing 'TDS'
+    if (!journalId) {
+      const tdsjournals = await odooCall(session, 'account.journal', 'search_read', 
+        [[['name', 'ilike', 'TDS']]], 
+        { fields: ['id', 'name', 'code'], limit: 5 }
+      );
+      console.log('   Found TDS journals:', tdsjournals);
+      if (tdsjournals.length) journalId = tdsjournals[0].id;
+    }
+    
+    // 3. Try 'Miscellaneous' journal
+    if (!journalId) {
+      const miscJournals = await odooCall(session, 'account.journal', 'search', [[['type', '=', 'general']]]);
+      if (miscJournals.length) journalId = miscJournals[0];
+    }
+    
+    if (!journalId) throw new Error(`No suitable journal found. Please create a 'TDS Receivable' journal in Odoo.`);
+    console.log(`   Using journal ID: ${journalId}`);
     
     // Find accounts
     const tdsAccIds = await odooCall(session, 'account.account', 'search', [[['code', '=', tdsAccountCode || '231110']]]);
@@ -496,6 +514,7 @@ app.post('/api/odoo/create-journal-entries', async (req, res) => {
     
     const tdsAccountId = tdsAccIds[0];
     const debtorAccountId = debtorAccIds[0];
+    console.log(`   TDS Account: ${tdsAccountId}, Debtor Account: ${debtorAccountId}`);
     
     const results = [];
     
@@ -515,11 +534,12 @@ app.post('/api/odoo/create-journal-entries', async (req, res) => {
           if (partnerIds.length) partnerId = partnerIds[0];
         }
         
-        // Create journal entry
+        // Create journal entry with proper structure
         const moveVals = {
           journal_id: journalId,
           date: entry.date,
           ref: entry.invoiceNo || `TDS Entry - ${entry.date}`,
+          move_type: 'entry',
           line_ids: [
             [0, 0, {
               account_id: tdsAccountId,
@@ -538,17 +558,18 @@ app.post('/api/odoo/create-journal-entries', async (req, res) => {
           ]
         };
         
+        console.log(`   Creating entry for ${entry.invoiceNo}...`);
         const moveId = await odooCall(session, 'account.move', 'create', [moveVals]);
         
         // Try to post the entry (make it official)
         try {
           await odooCall(session, 'account.move', 'action_post', [[moveId]]);
+          console.log(`   ✅ Created & posted: ${moveId}`);
         } catch (postErr) {
-          console.log(`   ⚠ Could not auto-post entry ${moveId}: ${postErr.message}`);
+          console.log(`   ⚠ Created ${moveId} but could not post: ${postErr.message}`);
         }
         
         results.push({ invoiceNo: entry.invoiceNo, moveId, status: 'created' });
-        console.log(`   ✅ Created journal entry ${moveId} for ${entry.invoiceNo}`);
         
       } catch (entryErr) {
         results.push({ invoiceNo: entry.invoiceNo, status: 'error', error: entryErr.message });
