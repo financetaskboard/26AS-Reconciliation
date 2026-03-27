@@ -539,8 +539,8 @@ function TanDetailModal({ tan, tanRow, txns26AS, txnsBooks, txnsInvoices, onClos
   const [groups, setGroups]   = useState([]);
   const [selBk,  setSelBk]    = useState(new Set()); // Books ids pending selection
   const [selAs,  setSelAs]    = useState(new Set()); // 26AS ids pending selection
-  const [invoiceLinks, setInvoiceLinks] = useState({}); // { [asRowId]: "INV1,INV2,..." } for unbooked rows — supports multiple invoices comma-separated
-  const [showTdsBookingModal, setShowTdsBookingModal] = useState(null); // { invoiceNo, invData, linkedRows } for TDS booking view
+  const [invoiceLinks, setInvoiceLinks] = useState({}); // { [asRowId]: "INV1,INV2,..." } supports multiple invoices comma-separated
+  const [showTdsBookingModal, setShowTdsBookingModal] = useState(null); // TDS booking view modal
 
   const PAIR_COLORS = ['#e8f8e8','#e6f3fb','#fff4e0','#f0e8ff','#fff0e0','#fdf0f8'];
   const PAIR_BORDER = ['#107c10','#0078d4','#d59300','#5c2d91','#c7792a','#c71585'];
@@ -621,29 +621,12 @@ function TanDetailModal({ tan, tanRow, txns26AS, txnsBooks, txnsInvoices, onClos
     const fmtAmt = n => '₹' + Number(n||0).toLocaleString('en-IN',{minimumFractionDigits:2});
 
     // Build map: invoiceNo → total 26AS amount already linked to it
-    // Now handles multiple invoices per 26AS row (comma-separated)
     const linkedAmtMap = {};
-    Object.entries(invoiceLinks).forEach(([asId, invNoStr]) => {
-      if (!invNoStr) return;
+    Object.entries(invoiceLinks).forEach(([asId, invNo]) => {
+      if (!invNo) return;
+      const key = invNo.trim().toUpperCase();
       const asRow = as.find(r => String(r.id) === String(asId));
-      if (!asRow) return;
-      
-      // Parse multiple invoices (comma-separated)
-      const invNos = invNoStr.split(',').map(s => s.trim().toUpperCase()).filter(Boolean);
-      if (invNos.length === 0) return;
-      
-      // Split amount proportionally based on invoice values, or equally if values unknown
-      const invAmounts = invNos.map(invNo => {
-        const invData = unbooked.find(inv => (inv.invoiceNo||'').trim().toUpperCase() === invNo);
-        return { invNo, amount: invData?.amountUntaxed || 0 };
-      });
-      const totalInvAmt = invAmounts.reduce((s, x) => s + x.amount, 0);
-      
-      invNos.forEach(invNo => {
-        const invAmt = invAmounts.find(x => x.invNo === invNo)?.amount || 0;
-        const proportion = totalInvAmt > 0 ? invAmt / totalInvAmt : 1 / invNos.length;
-        linkedAmtMap[invNo] = (linkedAmtMap[invNo] || 0) + (asRow.amountPaid || 0) * proportion;
-      });
+      if (asRow) linkedAmtMap[key] = (linkedAmtMap[key]||0) + (asRow.amountPaid||0);
     });
 
     const totalAmt = unbooked.reduce((s,r)=>s+(r.amountUntaxed||0),0);
@@ -720,7 +703,7 @@ function TanDetailModal({ tan, tanRow, txns26AS, txnsBooks, txnsInvoices, onClos
   </div>
 </div>
 <div class="wrap">
-  <div class="tip">💡 <span>Click <b>📋 Copy</b> next to an invoice → paste into the <b>Link invoice…</b> field. <b>Multiple invoices:</b> Use comma to separate (e.g., INV001, INV002). TDS will be split proportionally on export.</span></div>
+  <div class="tip">💡 <span>Click <b>📋 Copy</b> next to an invoice → Alt+Tab back to the app → paste into the <b>Link invoice…</b> field on the matching 26AS row → Export will include it in the Label column</span></div>
 <table>
   <thead><tr>
     <th style="width:36px">#</th><th>Invoice No</th><th>Invoice Date</th>
@@ -759,7 +742,7 @@ function copyInv(invNo, btn) {
   };
 
   // Export unmatched 26AS rows as CSV for journal entry booking
-  // Now supports multiple invoices per 26AS row — each invoice gets its own row with proportional TDS split
+  // Supports multiple invoices per 26AS row — each invoice gets its own row with proportional TDS split
   const exportUnbooked = () => {
     const matchedAsIds = new Set(groups.flatMap(g=>[...g.asIds]));
     const allUnbooked = as.filter(r => !matchedAsIds.has(r.id));
@@ -793,10 +776,9 @@ function copyInv(invNo, btn) {
     const drRows = [];
     const crRows = [];
 
-    // Helper to parse multiple invoices (comma-separated) and get invoice amounts from txnsInvoices
+    // Helper to parse multiple invoices and get amounts
     const getInvoiceAmounts = (invNosStr) => {
       const invNos = invNosStr.split(',').map(s => s.trim()).filter(Boolean);
-      if (invNos.length === 0) return [];
       return invNos.map(invNo => {
         const invData = txnsInvoices?.find(inv => (inv.invoiceNo||'').trim().toUpperCase() === invNo.toUpperCase());
         return { invNo, amount: invData?.amountUntaxed || 0 };
@@ -807,56 +789,22 @@ function copyInv(invNo, btn) {
     unbooked.forEach((r) => {
       const tdsAmt = r.tdsDeposited || r.tdsDeducted || 0;
       const invoiceNoStr = (invoiceLinks[r.id] || r.invoiceNo || '').trim();
-      
-      // Parse multiple invoices (comma-separated)
       const invoices = getInvoiceAmounts(invoiceNoStr);
       
       if (invoices.length <= 1) {
-        // Single invoice — original behavior
+        // Single invoice
         const invoiceNo = invoices.length === 1 ? invoices[0].invNo : invoiceNoStr;
-        drRows.push([
-          rowIdx === 0 ? today : '',
-          rowIdx === 0 ? 'TDS Receivable' : '',
-          partnerId,
-          '231110 TDS Receivable 25-26',
-          '',
-          invoiceNo,
-          tdsAmt,
-        ]);
-        crRows.push([
-          '', '',
-          partnerId,
-          '251000 Debtors',
-          tdsAmt,
-          invoiceNo,
-          '',
-        ]);
+        drRows.push([rowIdx === 0 ? today : '', rowIdx === 0 ? 'TDS Receivable' : '', partnerId, '231110 TDS Receivable 25-26', '', invoiceNo, tdsAmt]);
+        crRows.push(['', '', partnerId, '251000 Debtors', tdsAmt, invoiceNo, '']);
         rowIdx++;
       } else {
-        // Multiple invoices — split TDS proportionally by invoice amount
+        // Multiple invoices — split TDS proportionally
         const totalInvAmt = invoices.reduce((s, inv) => s + inv.amount, 0);
         invoices.forEach((inv) => {
-          // Proportional split based on invoice amounts; if total is 0, split equally
           const proportion = totalInvAmt > 0 ? inv.amount / totalInvAmt : 1 / invoices.length;
           const splitTds = Math.round(tdsAmt * proportion * 100) / 100;
-          
-          drRows.push([
-            rowIdx === 0 ? today : '',
-            rowIdx === 0 ? 'TDS Receivable' : '',
-            partnerId,
-            '231110 TDS Receivable 25-26',
-            '',
-            inv.invNo,
-            splitTds,
-          ]);
-          crRows.push([
-            '', '',
-            partnerId,
-            '251000 Debtors',
-            splitTds,
-            inv.invNo,
-            '',
-          ]);
+          drRows.push([rowIdx === 0 ? today : '', rowIdx === 0 ? 'TDS Receivable' : '', partnerId, '231110 TDS Receivable 25-26', '', inv.invNo, splitTds]);
+          crRows.push(['', '', partnerId, '251000 Debtors', splitTds, inv.invNo, '']);
           rowIdx++;
         });
       }
@@ -1024,49 +972,41 @@ function copyInv(invNo, btn) {
                           <td style={{textAlign:"right",fontFamily:"Consolas,monospace",fontSize:11,color:"#a80000",fontWeight:600}}>{fmt(r.tdsDeducted)}</td>
                           <td style={{textAlign:"right",fontFamily:"Consolas,monospace",fontSize:11,color:"var(--grn)"}}>{fmt(r.tdsDeposited||r.tdsDeducted)}</td>
                           <td><span style={{fontFamily:"Consolas,monospace",fontSize:10,color:r.bookingStatus==="F"?"var(--grn)":"var(--amb)"}}>{r.bookingStatus||"—"}</span></td>
-                          <td onClick={e=>e.stopPropagation()} style={{minWidth:160,maxWidth:220}}>
+                          <td onClick={e=>e.stopPropagation()} style={{minWidth:140,maxWidth:200}}>
                             {!grp
                               ? (() => {
                                   const linkedInvNoStr = invoiceLinks[r.id]||"";
-                                  // Support multiple invoices — comma-separated
+                                  // Support multiple invoices (comma-separated)
                                   const linkedInvNos = linkedInvNoStr.split(',').map(s => s.trim()).filter(Boolean);
                                   const hasMultiple = linkedInvNos.length > 1;
                                   
-                                  // Look up invoice amounts from synced data (for all linked invoices)
-                                  const invDataArr = linkedInvNos.map(invNo => ({
-                                    invNo,
-                                    data: txnsInvoices?.find(inv => (inv.invoiceNo||'').trim().toUpperCase() === invNo.toUpperCase())
-                                  }));
-                                  const totalInvAmt = invDataArr.reduce((s, x) => s + (x.data?.amountUntaxed || 0), 0);
-                                  const allFound = invDataArr.every(x => x.data);
-                                  const anyFound = invDataArr.some(x => x.data);
+                                  // Look up first invoice for display
+                                  const firstInvNo = linkedInvNos[0] || "";
+                                  const invData = firstInvNo && txnsInvoices
+                                    ? txnsInvoices.find(inv => (inv.invoiceNo||'').trim().toUpperCase() === firstInvNo.toUpperCase())
+                                    : null;
                                   
-                                  // For TDS calculation: get Books entries linked to these invoices
-                                  const getTdsBookedForInvoice = (invNo) => {
-                                    // Sum TDS from Books entries with matching invoice number
-                                    return bk.filter(b => (b.invoiceNo||'').trim().toUpperCase() === invNo.toUpperCase())
-                                             .reduce((s, b) => s + (b.tdsDeducted || 0), 0);
-                                  };
+                                  // Sum amounts for all linked invoices
+                                  const totalInvAmt = linkedInvNos.reduce((sum, invNo) => {
+                                    const inv = txnsInvoices?.find(i => (i.invoiceNo||'').trim().toUpperCase() === invNo.toUpperCase());
+                                    return sum + (inv?.amountUntaxed || 0);
+                                  }, 0);
                                   
-                                  // Sum ALL 26AS rows linked to any of these invoices
+                                  // Sum ALL 26AS rows linked to these invoices
                                   const totalLinkedAmt = linkedInvNos.length > 0
                                     ? as.filter(a => {
                                         const aInvs = (invoiceLinks[a.id]||'').split(',').map(s=>s.trim().toUpperCase()).filter(Boolean);
                                         return linkedInvNos.some(inv => aInvs.includes(inv.toUpperCase()));
                                       }).reduce((s,a) => s + (a.amountPaid||0), 0)
                                     : (r.amountPaid||0);
-                                    
                                   const diff = totalInvAmt > 0 ? totalInvAmt - totalLinkedAmt : null;
                                   
-                                  // Multi-linked indicator for first invoice
-                                  const firstInvNo = linkedInvNos[0] || '';
-                                  const multiLinked = firstInvNo
-                                    ? as.filter(a => {
-                                        const aInvs = (invoiceLinks[a.id]||'').split(',').map(s=>s.trim().toUpperCase()).filter(Boolean);
-                                        return aInvs.includes(firstInvNo.toUpperCase());
-                                      }).length > 1
-                                    : false;
-                                    
+                                  // TDS booked calculation
+                                  const getTdsBookedForInvoice = (invNo) => {
+                                    return bk.filter(b => (b.invoiceNo||'').trim().toUpperCase() === invNo.toUpperCase())
+                                             .reduce((s, b) => s + (b.tdsDeducted || 0), 0);
+                                  };
+                                  
                                   return (
                                     <div style={{padding:"2px 4px"}}>
                                       <div style={{display:"flex",alignItems:"center",gap:3}}>
@@ -1074,73 +1014,64 @@ function copyInv(invNo, btn) {
                                           value={linkedInvNoStr}
                                           onChange={e=>setInvoiceLinks(prev=>({...prev,[r.id]:e.target.value}))}
                                           placeholder="INV1, INV2…"
-                                          title="Paste invoice number(s) — use comma to link multiple invoices"
+                                          title="Paste invoice number(s) — use comma for multiple"
                                           style={{flex:1,minWidth:0,border:`1px solid ${linkedInvNoStr?"#c7792a":"#ddd"}`,borderRadius:3,padding:"2px 5px",fontSize:10,fontFamily:"Consolas,monospace",color:"#c7792a",background:linkedInvNoStr?"#fff8f0":"transparent",outline:"none"}}
                                           onFocus={e=>{e.target.style.border="1px solid #c7792a";e.target.style.background="#fff8f0";}}
                                           onBlur={e=>{e.target.style.border=`1px solid ${linkedInvNoStr?"#c7792a":"#ddd"}`;e.target.style.background=linkedInvNoStr?"#fff8f0":"transparent";}}
                                         />
-                                        {linkedInvNoStr && <span title={hasMultiple ? `${linkedInvNos.length} invoices linked` : "Linked"} style={{color:"#c7792a",fontSize:11,flexShrink:0}}>🔗{hasMultiple && <sup style={{fontSize:8}}>{linkedInvNos.length}</sup>}</span>}
+                                        {linkedInvNoStr && <span title={hasMultiple?`${linkedInvNos.length} invoices`:"Linked"} style={{color:"#c7792a",fontSize:11,flexShrink:0}}>🔗{hasMultiple&&<sup style={{fontSize:8}}>{linkedInvNos.length}</sup>}</span>}
                                       </div>
-                                      {anyFound && (
-                                        <div style={{marginTop:2,fontSize:9.5,display:"flex",gap:6,flexWrap:"wrap",alignItems:"center"}}>
+                                      {totalInvAmt > 0 && (
+                                        <div style={{marginTop:2,fontSize:9.5,display:"flex",gap:6,flexWrap:"wrap"}}>
                                           <span style={{color:"#107c10",fontFamily:"Consolas,monospace",fontWeight:600}}>
                                             Inv: ₹{totalInvAmt.toLocaleString("en-IN",{maximumFractionDigits:0})}
                                           </span>
-                                          {hasMultiple && <span style={{color:"#5c2d91",fontSize:9,fontWeight:600}}>({linkedInvNos.length} inv)</span>}
-                                          {multiLinked && <span style={{color:"#0078d4",fontSize:9}}>({as.filter(a=>{const aInvs=(invoiceLinks[a.id]||'').split(',').map(s=>s.trim().toUpperCase()).filter(Boolean);return aInvs.includes(firstInvNo.toUpperCase());}).length} rows)</span>}
+                                          {hasMultiple && <span style={{color:"#5c2d91",fontSize:9}}>({linkedInvNos.length} inv)</span>}
                                           {diff !== null && (
                                             <span style={{color: Math.abs(diff)<1 ? "#107c10" : diff>0 ? "#0078d4" : "#a80000", fontFamily:"Consolas,monospace", fontWeight:600}}>
-                                              {Math.abs(diff)<1 ? "✓ exact" : diff>0 ? `+₹${diff.toLocaleString("en-IN",{maximumFractionDigits:0})}` : `-₹${Math.abs(diff).toLocaleString("en-IN",{maximumFractionDigits:0})}`}
+                                              {Math.abs(diff)<1 ? "✓" : diff>0 ? `+₹${diff.toLocaleString("en-IN",{maximumFractionDigits:0})}` : `-₹${Math.abs(diff).toLocaleString("en-IN",{maximumFractionDigits:0})}`}
                                             </span>
                                           )}
                                         </div>
                                       )}
-                                      {/* TDS Booking View Link */}
-                                      {anyFound && (
-                                        <div style={{marginTop:3}}>
-                                          {invDataArr.filter(x=>x.data).map((x, idx) => {
-                                            const tdsBooked = getTdsBookedForInvoice(x.invNo);
-                                            const taxableVal = x.data.amountUntaxed || 0;
+                                      {/* TDS Booking View Button */}
+                                      {linkedInvNos.length > 0 && linkedInvNos.some(inv => txnsInvoices?.find(i => (i.invoiceNo||'').trim().toUpperCase() === inv.toUpperCase())) && (
+                                        <div style={{marginTop:3,display:"flex",flexWrap:"wrap",gap:2}}>
+                                          {linkedInvNos.slice(0,2).map(invNo => {
+                                            const inv = txnsInvoices?.find(i => (i.invoiceNo||'').trim().toUpperCase() === invNo.toUpperCase());
+                                            if (!inv) return null;
+                                            const tdsBooked = getTdsBookedForInvoice(invNo);
+                                            const taxableVal = inv.amountUntaxed || 0;
                                             const tdsPercent = taxableVal > 0 ? ((tdsBooked / taxableVal) * 100).toFixed(1) : 0;
-                                            const expectedTds = taxableVal * 0.10; // Assuming 10% standard rate
-                                            const isExcess = tdsBooked > expectedTds * 1.05; // More than 5% over expected
-                                            const linkedRows = bk.filter(b => (b.invoiceNo||'').trim().toUpperCase() === x.invNo.toUpperCase());
+                                            const isExcess = tdsBooked > taxableVal * 0.105;
+                                            const linkedRows = bk.filter(b => (b.invoiceNo||'').trim().toUpperCase() === invNo.toUpperCase());
                                             return (
                                               <button
-                                                key={x.invNo}
+                                                key={invNo}
                                                 onClick={(e) => {
                                                   e.stopPropagation();
-                                                  setShowTdsBookingModal({
-                                                    invoiceNo: x.invNo,
-                                                    invData: x.data,
-                                                    tdsBooked,
-                                                    tdsPercent,
-                                                    linkedRows,
-                                                    taxableVal,
-                                                    as26Row: r
-                                                  });
+                                                  setShowTdsBookingModal({ invoiceNo: invNo, invData: inv, tdsBooked, tdsPercent, linkedRows, taxableVal, as26Row: r });
                                                 }}
                                                 style={{
-                                                  display:"flex",alignItems:"center",gap:4,
+                                                  display:"flex",alignItems:"center",gap:3,
                                                   background: isExcess ? "#fff0f0" : tdsBooked > 0 ? "#e8f8e8" : "#f5f5f5",
                                                   border: `1px solid ${isExcess ? "#f0a0a0" : tdsBooked > 0 ? "#90d090" : "#ddd"}`,
-                                                  borderRadius:3,padding:"1px 6px",cursor:"pointer",
-                                                  fontSize:9,fontFamily:"inherit",color:isExcess?"#a80000":tdsBooked>0?"#107c10":"#666",
-                                                  marginRight:4,marginBottom:2
+                                                  borderRadius:3,padding:"1px 5px",cursor:"pointer",
+                                                  fontSize:9,fontFamily:"inherit",color:isExcess?"#a80000":tdsBooked>0?"#107c10":"#666"
                                                 }}
-                                                title={`View TDS booking details for ${x.invNo}`}
+                                                title={`TDS: ₹${tdsBooked.toLocaleString("en-IN")} (${tdsPercent}%)`}
                                               >
-                                                <span style={{fontFamily:"Consolas,monospace",fontWeight:600}}>{hasMultiple ? x.invNo.slice(-8) : 'TDS'}</span>
-                                                <span>→</span>
+                                                <span style={{fontWeight:600}}>{hasMultiple ? invNo.slice(-6) : 'TDS'}</span>
                                                 <span style={{fontWeight:700}}>₹{tdsBooked.toLocaleString("en-IN",{maximumFractionDigits:0})}</span>
                                                 <span style={{opacity:0.7}}>({tdsPercent}%)</span>
-                                                {isExcess && <span style={{color:"#a80000",fontWeight:700}}>⚠</span>}
+                                                {isExcess && <span>⚠</span>}
                                               </button>
                                             );
                                           })}
+                                          {linkedInvNos.length > 2 && <span style={{fontSize:9,color:"#999"}}>+{linkedInvNos.length-2}</span>}
                                         </div>
                                       )}
-                                      {linkedInvNoStr && !anyFound && (
+                                      {linkedInvNoStr && !invData && linkedInvNos.length === 1 && (
                                         <div style={{marginTop:2,fontSize:9.5,color:"#d59300"}}>⚠ not in synced invoices</div>
                                       )}
                                     </div>
@@ -1155,7 +1086,7 @@ function copyInv(invNo, btn) {
                   </table>
                 )}
             </div>
-                <div className="modal-ft">
+            <div className="modal-ft">
               <span style={{color:"var(--tx2)"}}>Total TDS (26AS)</span>
               <div style={{display:"flex",alignItems:"center",gap:10}}>
                 {groups.length>0 && <span style={{fontSize:11,color:"var(--grn)",fontWeight:600}}>✓ {[...matchedAsIds].length} matched · {unbookedCount} unbooked</span>}
@@ -1173,150 +1104,61 @@ function copyInv(invNo, btn) {
 
       {/* TDS Booking Details Modal */}
       {showTdsBookingModal && (
-        <div 
-          style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.5)",zIndex:2000,display:"flex",alignItems:"center",justifyContent:"center"}}
-          onClick={e => e.target === e.currentTarget && setShowTdsBookingModal(null)}
-        >
-          <div style={{background:"#fff",borderRadius:8,width:560,maxHeight:"80vh",overflow:"hidden",boxShadow:"0 8px 32px rgba(0,0,0,0.25)"}}>
-            {/* Header */}
-            <div style={{background:"linear-gradient(135deg, #5c2d91 0%, #0078d4 100%)",padding:"16px 20px",color:"#fff"}}>
+        <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.5)",zIndex:2000,display:"flex",alignItems:"center",justifyContent:"center"}} onClick={e=>e.target===e.currentTarget&&setShowTdsBookingModal(null)}>
+          <div style={{background:"#fff",borderRadius:8,width:580,maxHeight:"80vh",overflow:"hidden",boxShadow:"0 8px 32px rgba(0,0,0,0.25)"}}>
+            <div style={{background:"linear-gradient(135deg, #5c2d91, #0078d4)",padding:"16px 20px",color:"#fff"}}>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
                 <div>
                   <div style={{fontSize:10,opacity:0.8,textTransform:"uppercase",letterSpacing:1,marginBottom:4}}>TDS Booking Details</div>
                   <div style={{fontSize:16,fontWeight:700,fontFamily:"Consolas,monospace"}}>{showTdsBookingModal.invoiceNo}</div>
                 </div>
-                <button 
-                  onClick={() => setShowTdsBookingModal(null)}
-                  style={{background:"rgba(255,255,255,0.2)",border:"none",borderRadius:4,padding:"4px 8px",cursor:"pointer",color:"#fff",fontSize:16}}
-                >✕</button>
+                <button onClick={()=>setShowTdsBookingModal(null)} style={{background:"rgba(255,255,255,0.2)",border:"none",borderRadius:4,padding:"4px 8px",cursor:"pointer",color:"#fff",fontSize:14}}>✕</button>
               </div>
             </div>
-
-            {/* Summary Cards */}
             <div style={{padding:"16px 20px",background:"#f8f9fa",borderBottom:"1px solid #e0e0e0",display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12}}>
-              <div style={{background:"#fff",padding:"12px 14px",borderRadius:6,border:"1px solid #e0e0e0"}}>
+              <div style={{background:"#fff",padding:"12px",borderRadius:6,border:"1px solid #e0e0e0"}}>
                 <div style={{fontSize:10,color:"#666",textTransform:"uppercase",marginBottom:4}}>Taxable Value</div>
-                <div style={{fontSize:18,fontWeight:700,color:"#107c10",fontFamily:"Consolas,monospace"}}>
-                  ₹{(showTdsBookingModal.taxableVal||0).toLocaleString("en-IN",{minimumFractionDigits:2})}
-                </div>
+                <div style={{fontSize:18,fontWeight:700,color:"#107c10",fontFamily:"Consolas,monospace"}}>₹{(showTdsBookingModal.taxableVal||0).toLocaleString("en-IN",{minimumFractionDigits:2})}</div>
               </div>
-              <div style={{background:"#fff",padding:"12px 14px",borderRadius:6,border:"1px solid #e0e0e0"}}>
+              <div style={{background:"#fff",padding:"12px",borderRadius:6,border:"1px solid #e0e0e0"}}>
                 <div style={{fontSize:10,color:"#666",textTransform:"uppercase",marginBottom:4}}>TDS Booked</div>
-                <div style={{fontSize:18,fontWeight:700,color:"#0078d4",fontFamily:"Consolas,monospace"}}>
-                  ₹{(showTdsBookingModal.tdsBooked||0).toLocaleString("en-IN",{minimumFractionDigits:2})}
-                </div>
+                <div style={{fontSize:18,fontWeight:700,color:"#0078d4",fontFamily:"Consolas,monospace"}}>₹{(showTdsBookingModal.tdsBooked||0).toLocaleString("en-IN",{minimumFractionDigits:2})}</div>
               </div>
-              <div style={{background:"#fff",padding:"12px 14px",borderRadius:6,border:`1px solid ${parseFloat(showTdsBookingModal.tdsPercent) > 10.5 ? "#f0a0a0" : "#e0e0e0"}`}}>
-                <div style={{fontSize:10,color:"#666",textTransform:"uppercase",marginBottom:4}}>TDS Rate</div>
-                <div style={{fontSize:18,fontWeight:700,color:parseFloat(showTdsBookingModal.tdsPercent) > 10.5 ? "#a80000" : "#5c2d91",fontFamily:"Consolas,monospace"}}>
-                  {showTdsBookingModal.tdsPercent}%
-                  {parseFloat(showTdsBookingModal.tdsPercent) > 10.5 && <span style={{fontSize:12,marginLeft:6}}>⚠ High</span>}
-                </div>
+              <div style={{background:"#fff",padding:"12px",borderRadius:6,border:`1px solid ${parseFloat(showTdsBookingModal.tdsPercent)>10.5?"#f0a0a0":"#e0e0e0"}`}}>
+                <div style={{fontSize:10,color:"#666",textTransform:"uppercase",marginBottom:4}}>Tax Rate</div>
+                <div style={{fontSize:18,fontWeight:700,color:parseFloat(showTdsBookingModal.tdsPercent)>10.5?"#a80000":"#5c2d91",fontFamily:"Consolas,monospace"}}>{showTdsBookingModal.tdsPercent}%{parseFloat(showTdsBookingModal.tdsPercent)>10.5&&<span style={{fontSize:12,marginLeft:6}}>⚠</span>}</div>
               </div>
             </div>
-
-            {/* Expected vs Actual */}
-            <div style={{padding:"12px 20px",background:"#fff",borderBottom:"1px solid #e0e0e0"}}>
-              <div style={{display:"flex",gap:20,fontSize:12}}>
-                <div>
-                  <span style={{color:"#666"}}>Expected TDS @10%: </span>
-                  <span style={{fontWeight:600,fontFamily:"Consolas,monospace",color:"#107c10"}}>
-                    ₹{((showTdsBookingModal.taxableVal||0) * 0.10).toLocaleString("en-IN",{minimumFractionDigits:2})}
-                  </span>
-                </div>
-                <div>
-                  <span style={{color:"#666"}}>Difference: </span>
-                  {(() => {
-                    const expected = (showTdsBookingModal.taxableVal||0) * 0.10;
-                    const diff = (showTdsBookingModal.tdsBooked||0) - expected;
-                    const isExcess = diff > 1;
-                    const isShort = diff < -1;
-                    return (
-                      <span style={{fontWeight:600,fontFamily:"Consolas,monospace",color:isExcess?"#a80000":isShort?"#d59300":"#107c10"}}>
-                        {isExcess ? "+" : ""}{diff.toLocaleString("en-IN",{minimumFractionDigits:2})}
-                        {isExcess && " (Excess)"}
-                        {isShort && " (Short)"}
-                        {!isExcess && !isShort && " ✓"}
-                      </span>
-                    );
-                  })()}
-                </div>
-              </div>
+            <div style={{padding:"12px 20px",background:"#fff",borderBottom:"1px solid #e0e0e0",fontSize:12}}>
+              <span style={{color:"#666"}}>Expected @10%: </span>
+              <span style={{fontWeight:600,color:"#107c10",fontFamily:"Consolas,monospace"}}>₹{((showTdsBookingModal.taxableVal||0)*0.10).toLocaleString("en-IN",{minimumFractionDigits:2})}</span>
+              <span style={{color:"#666",marginLeft:16}}>Diff: </span>
+              {(()=>{const exp=(showTdsBookingModal.taxableVal||0)*0.10;const d=(showTdsBookingModal.tdsBooked||0)-exp;return<span style={{fontWeight:600,fontFamily:"Consolas,monospace",color:d>1?"#a80000":d<-1?"#d59300":"#107c10"}}>{d>0?"+":""}{d.toLocaleString("en-IN",{minimumFractionDigits:2})}{d>1?" (Excess)":d<-1?" (Short)":" ✓"}</span>;})()}
             </div>
-
-            {/* Booking Entries Table */}
-            <div style={{padding:"16px 20px",maxHeight:280,overflowY:"auto"}}>
-              <div style={{fontSize:12,fontWeight:600,color:"#333",marginBottom:10}}>
-                📘 Books Entries for this Invoice ({showTdsBookingModal.linkedRows?.length || 0})
-              </div>
-              {(!showTdsBookingModal.linkedRows || showTdsBookingModal.linkedRows.length === 0) ? (
-                <div style={{padding:"24px",textAlign:"center",color:"#999",fontSize:13,background:"#f8f8f8",borderRadius:6}}>
-                  <div style={{fontSize:24,marginBottom:8}}>📭</div>
-                  No TDS booked against this invoice yet
-                </div>
-              ) : (
+            <div style={{padding:"16px 20px",maxHeight:250,overflowY:"auto"}}>
+              <div style={{fontSize:12,fontWeight:600,color:"#333",marginBottom:10}}>📘 Books Entries ({showTdsBookingModal.linkedRows?.length||0})</div>
+              {(!showTdsBookingModal.linkedRows||showTdsBookingModal.linkedRows.length===0)?(
+                <div style={{padding:"24px",textAlign:"center",color:"#999",fontSize:13,background:"#f8f8f8",borderRadius:6}}>No TDS booked against this invoice</div>
+              ):(
                 <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
-                  <thead>
-                    <tr style={{background:"#f0f4f8"}}>
-                      <th style={{padding:"8px 10px",textAlign:"left",fontWeight:600,color:"#555",borderBottom:"2px solid #0078d4"}}>#</th>
-                      <th style={{padding:"8px 10px",textAlign:"left",fontWeight:600,color:"#555",borderBottom:"2px solid #0078d4"}}>Date</th>
-                      <th style={{padding:"8px 10px",textAlign:"left",fontWeight:600,color:"#555",borderBottom:"2px solid #0078d4"}}>Quarter</th>
-                      <th style={{padding:"8px 10px",textAlign:"left",fontWeight:600,color:"#555",borderBottom:"2px solid #0078d4"}}>Section</th>
-                      <th style={{padding:"8px 10px",textAlign:"right",fontWeight:600,color:"#555",borderBottom:"2px solid #0078d4"}}>TDS Amount</th>
-                      <th style={{padding:"8px 10px",textAlign:"right",fontWeight:600,color:"#555",borderBottom:"2px solid #0078d4"}}>Rate %</th>
-                    </tr>
-                  </thead>
+                  <thead><tr style={{background:"#f0f4f8"}}><th style={{padding:"8px",textAlign:"left",fontWeight:600,color:"#555",borderBottom:"2px solid #0078d4"}}>S.No.</th><th style={{padding:"8px",textAlign:"left",fontWeight:600,color:"#555",borderBottom:"2px solid #0078d4"}}>Date</th><th style={{padding:"8px",textAlign:"left",fontWeight:600,color:"#555",borderBottom:"2px solid #0078d4"}}>Quarter</th><th style={{padding:"8px",textAlign:"left",fontWeight:600,color:"#555",borderBottom:"2px solid #0078d4"}}>Section</th><th style={{padding:"8px",textAlign:"right",fontWeight:600,color:"#555",borderBottom:"2px solid #0078d4"}}>TDS Amount</th><th style={{padding:"8px",textAlign:"right",fontWeight:600,color:"#555",borderBottom:"2px solid #0078d4"}}>Rate</th></tr></thead>
                   <tbody>
-                    {showTdsBookingModal.linkedRows.map((row, idx) => {
-                      const rowRate = showTdsBookingModal.taxableVal > 0 
-                        ? ((row.tdsDeducted || 0) / showTdsBookingModal.taxableVal * 100).toFixed(2)
-                        : "—";
-                      return (
-                        <tr key={idx} style={{borderBottom:"1px solid #f0f0f0",background:idx%2===0?"#fff":"#fafafa"}}>
-                          <td style={{padding:"8px 10px",color:"#999"}}>{idx + 1}</td>
-                          <td style={{padding:"8px 10px",fontFamily:"Consolas,monospace",fontSize:11}}>{row.date || row.invoiceDate || "—"}</td>
-                          <td style={{padding:"8px 10px"}}><span style={{background:"#e8f8e8",color:"#107c10",padding:"2px 8px",borderRadius:10,fontSize:10,fontWeight:600}}>{row.quarter || "—"}</span></td>
-                          <td style={{padding:"8px 10px"}}><span style={{background:"#f0e8ff",color:"#5c2d91",padding:"2px 8px",borderRadius:10,fontSize:10,fontWeight:600}}>{row.section || "—"}</span></td>
-                          <td style={{padding:"8px 10px",textAlign:"right",fontFamily:"Consolas,monospace",fontWeight:600,color:"#0078d4"}}>
-                            ₹{(row.tdsDeducted || 0).toLocaleString("en-IN",{minimumFractionDigits:2})}
-                          </td>
-                          <td style={{padding:"8px 10px",textAlign:"right",fontFamily:"Consolas,monospace",color:"#666"}}>{rowRate}%</td>
-                        </tr>
-                      );
-                    })}
+                    {showTdsBookingModal.linkedRows.map((row,idx)=>{const rate=showTdsBookingModal.taxableVal>0?((row.tdsDeducted||0)/showTdsBookingModal.taxableVal*100).toFixed(2):"—";return(
+                      <tr key={idx} style={{borderBottom:"1px solid #f0f0f0",background:idx%2===0?"#fff":"#fafafa"}}>
+                        <td style={{padding:"8px",color:"#999"}}>{idx+1}</td>
+                        <td style={{padding:"8px",fontFamily:"Consolas,monospace",fontSize:11}}>{row.date||row.invoiceDate||"—"}</td>
+                        <td style={{padding:"8px"}}><span style={{background:"#e8f8e8",color:"#107c10",padding:"2px 8px",borderRadius:10,fontSize:10,fontWeight:600}}>{row.quarter||"—"}</span></td>
+                        <td style={{padding:"8px"}}><span style={{background:"#f0e8ff",color:"#5c2d91",padding:"2px 8px",borderRadius:10,fontSize:10,fontWeight:600}}>{row.section||"—"}</span></td>
+                        <td style={{padding:"8px",textAlign:"right",fontFamily:"Consolas,monospace",fontWeight:600,color:"#0078d4"}}>₹{(row.tdsDeducted||0).toLocaleString("en-IN",{minimumFractionDigits:2})}</td>
+                        <td style={{padding:"8px",textAlign:"right",fontFamily:"Consolas,monospace",color:"#666"}}>{rate}%</td>
+                      </tr>
+                    );})}
                   </tbody>
-                  <tfoot>
-                    <tr style={{background:"#e6f3fb",fontWeight:700}}>
-                      <td colSpan={4} style={{padding:"10px",color:"#0078d4"}}>Total TDS Booked</td>
-                      <td style={{padding:"10px",textAlign:"right",fontFamily:"Consolas,monospace",color:"#0078d4",fontSize:14}}>
-                        ₹{(showTdsBookingModal.tdsBooked || 0).toLocaleString("en-IN",{minimumFractionDigits:2})}
-                      </td>
-                      <td style={{padding:"10px",textAlign:"right",fontFamily:"Consolas,monospace",color:"#5c2d91"}}>{showTdsBookingModal.tdsPercent}%</td>
-                    </tr>
-                  </tfoot>
+                  <tfoot><tr style={{background:"#e6f3fb"}}><td colSpan={4} style={{padding:"10px",fontWeight:700,color:"#0078d4"}}>Total</td><td style={{padding:"10px",textAlign:"right",fontFamily:"Consolas,monospace",fontWeight:700,color:"#0078d4"}}>₹{(showTdsBookingModal.tdsBooked||0).toLocaleString("en-IN",{minimumFractionDigits:2})}</td><td style={{padding:"10px",textAlign:"right",fontFamily:"Consolas,monospace",fontWeight:600,color:"#5c2d91"}}>{showTdsBookingModal.tdsPercent}%</td></tr></tfoot>
                 </table>
               )}
             </div>
-
-            {/* 26AS Reference */}
-            {showTdsBookingModal.as26Row && (
-              <div style={{padding:"12px 20px",background:"#fff8f0",borderTop:"1px solid #ffd59a"}}>
-                <div style={{fontSize:11,color:"#996600",display:"flex",gap:16,flexWrap:"wrap"}}>
-                  <span><b>26AS Reference:</b></span>
-                  <span>Date: <b>{showTdsBookingModal.as26Row.date || "—"}</b></span>
-                  <span>Amount Paid: <b style={{fontFamily:"Consolas,monospace"}}>₹{(showTdsBookingModal.as26Row.amountPaid||0).toLocaleString("en-IN")}</b></span>
-                  <span>TDS in 26AS: <b style={{fontFamily:"Consolas,monospace",color:"#a80000"}}>₹{(showTdsBookingModal.as26Row.tdsDeducted||0).toLocaleString("en-IN")}</b></span>
-                </div>
-              </div>
-            )}
-
-            {/* Footer */}
-            <div style={{padding:"12px 20px",background:"#f0f0f0",borderTop:"1px solid #e0e0e0",display:"flex",justifyContent:"flex-end"}}>
-              <button 
-                onClick={() => setShowTdsBookingModal(null)}
-                style={{background:"#0078d4",color:"#fff",border:"none",borderRadius:4,padding:"8px 20px",cursor:"pointer",fontSize:12,fontWeight:600}}
-              >Close</button>
-            </div>
+            <div style={{padding:"12px 20px",background:"#f0f0f0",borderTop:"1px solid #e0e0e0",display:"flex",justifyContent:"flex-end"}}><button onClick={()=>setShowTdsBookingModal(null)} style={{background:"#0078d4",color:"#fff",border:"none",borderRadius:4,padding:"8px 20px",cursor:"pointer",fontSize:12,fontWeight:600}}>Close</button></div>
           </div>
         </div>
       )}
@@ -1528,7 +1370,6 @@ export default function App() {
   const [selSection, setSelSection] = useState("All"); // section filter in section mode
   const [sectionSearch, setSectionSearch] = useState("");
   const [detailTAN, setDetailTAN] = useState(null);
-  const [invoiceTdsModal, setInvoiceTdsModal] = useState(null); // { invoiceNo, invData, tdsBooked, tdsPercent, linkedRows, taxableVal }
   const [storageStatus, setStorageStatus] = useState("idle");
   const [lastSaved, setLastSaved] = useState(null);
   const [tanSearch, setTanSearch] = useState("");
@@ -5193,7 +5034,7 @@ export default function App() {
                   <div className="dstabs">
                     {["26AS","AIS","Books","Invoices"].map(ds=>(
                       <div key={ds} className={`dst${selDS===ds?" on":""}`} onClick={()=>{setSelDS(ds);setSelRows(new Set());setSearchQ("");}}>
-                        {ds} ({(ds==="Invoices"?(datasets["Invoices"]||[]):datasets[ds]).length})
+                        {ds} ({ds==="Invoices"?(datasets["Invoices"]||[]).length:datasets[ds].length})
                       </div>
                     ))}
                   </div>
@@ -5202,147 +5043,59 @@ export default function App() {
                     <input ref={searchRef} placeholder="Search..." value={searchQ} onChange={e=>setSearchQ(e.target.value)}/>
                     {searchQ&&<span onClick={()=>setSearchQ("")} style={{cursor:"pointer",color:"#999",fontSize:11}}>✕</span>}
                   </div>
-                  <div className="rc">{selDS==="Invoices" ? `${(datasets["Invoices"]||[]).length} invoices` : (filtered.length!==activeData.length?`${filtered.length} of ${activeData.length}`:`${activeData.length} records`)}{selRows.size>0&&` · ${selRows.size} selected`}</div>
+                  <div className="rc">{selDS==="Invoices"?`${(datasets["Invoices"]||[]).length} invoices`:(filtered.length!==activeData.length?`${filtered.length} of ${activeData.length}`:`${activeData.length} records`)}{selRows.size>0&&` · ${selRows.size} selected`}</div>
                 </div>
-                
-                {/* Special Invoices Tab — TDS Booking View */}
-                {selDS==="Invoices" ? (
-                  (datasets["Invoices"]||[]).length === 0 ? (
-                    <div className="emp">
-                      <Ic d={I.file} s={44} c="#d1d1d1" sw={1}/>
-                      <p>No Invoice data loaded</p>
-                      <p className="sub">Sync invoices from Odoo ERP in the Import section</p>
-                      <button className="ib" style={{marginTop:8}} onClick={()=>setView("import")}>Go to Import</button>
-                    </div>
-                  ) : (
+                {selDS==="Invoices"?(
+                  (datasets["Invoices"]||[]).length===0?(
+                    <div className="emp"><Ic d={I.file} s={44} c="#d1d1d1" sw={1}/><p>No Invoice data loaded</p><p className="sub">Sync invoices from Odoo ERP</p><button className="ib" style={{marginTop:8}} onClick={()=>setView("import")}>Go to Import</button></div>
+                  ):(
                     <>
                       <div className="gw">
                         <table className="dg">
                           <thead><tr>
-                            <th style={{width:50}}>#</th>
-                            <th style={{width:200}}>Client / Party Name</th>
-                            <th style={{width:150}}>Invoice No.</th>
+                            <th style={{width:50}}>S.No.</th>
+                            <th style={{width:200}}>Name of Client</th>
+                            <th style={{width:140}}>Invoice No.</th>
                             <th style={{width:100}}>Invoice Date</th>
                             <th style={{width:130,textAlign:"right"}}>Taxable Value</th>
-                            <th style={{width:120,textAlign:"right"}}>TDS Booked</th>
+                            <th style={{width:120,textAlign:"right"}}>Booked TDS</th>
                             <th style={{width:80,textAlign:"right"}}>Tax Rate</th>
-                            <th style={{width:100}}>Status</th>
-                            <th style={{width:80}}>Actions</th>
+                            <th style={{width:80}}>Status</th>
                           </tr></thead>
                           <tbody>
-                            {(datasets["Invoices"]||[])
-                              .filter(inv => !searchQ || 
-                                (inv.partnerName||'').toLowerCase().includes(searchQ.toLowerCase()) ||
-                                (inv.invoiceNo||'').toLowerCase().includes(searchQ.toLowerCase())
-                              )
-                              .map((inv, idx) => {
-                                // Calculate TDS booked for this invoice from Books data
-                                const invNo = (inv.invoiceNo||'').trim().toUpperCase();
-                                const booksEntries = (datasets["Books"]||[]).filter(b => 
-                                  (b.invoiceNo||'').trim().toUpperCase() === invNo
-                                );
-                                const tdsBooked = booksEntries.reduce((s, b) => s + (b.tdsDeducted || 0), 0);
-                                const taxableVal = inv.amountUntaxed || 0;
-                                const tdsPercent = taxableVal > 0 ? ((tdsBooked / taxableVal) * 100) : 0;
-                                const expectedTds = taxableVal * 0.10; // 10% standard
-                                const isExcess = tdsBooked > expectedTds * 1.05;
-                                const isShort = tdsBooked < expectedTds * 0.95 && tdsBooked > 0;
-                                const hasNoBooking = tdsBooked === 0;
-                                
-                                return (
-                                  <tr key={inv.id || idx} style={{background: isExcess ? "#fff8f8" : hasNoBooking ? "#fffaf0" : idx % 2 === 0 ? "#fff" : "#fafafa"}}>
-                                    <td style={{color:"#aaa"}}>{idx + 1}</td>
-                                    <td title={inv.partnerName} style={{fontWeight:500,maxWidth:200,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{inv.partnerName||"—"}</td>
-                                    <td><span style={{fontFamily:"Consolas,monospace",color:"var(--a)",fontSize:11,fontWeight:600}}>{inv.invoiceNo||"—"}</span></td>
-                                    <td style={{fontFamily:"Consolas,monospace",fontSize:11}}>{inv.invoiceDate||"—"}</td>
-                                    <td className="num" style={{fontWeight:600,color:"#107c10"}}>₹{taxableVal.toLocaleString("en-IN",{minimumFractionDigits:2})}</td>
-                                    <td className="num" style={{fontWeight:600,color:isExcess?"#a80000":hasNoBooking?"#d59300":"#0078d4"}}>
-                                      {tdsBooked > 0 ? `₹${tdsBooked.toLocaleString("en-IN",{minimumFractionDigits:2})}` : "—"}
-                                    </td>
-                                    <td className="num" style={{fontWeight:600,color:isExcess?"#a80000":isShort?"#d59300":"#5c2d91"}}>
-                                      {tdsBooked > 0 ? `${tdsPercent.toFixed(2)}%` : "—"}
-                                      {isExcess && <span title="Excess TDS booked" style={{marginLeft:4}}>⚠</span>}
-                                    </td>
-                                    <td>
-                                      <span style={{
-                                        display:"inline-block",
-                                        padding:"2px 8px",
-                                        borderRadius:10,
-                                        fontSize:10,
-                                        fontWeight:600,
-                                        background: hasNoBooking ? "#fff4e0" : isExcess ? "#fde7e9" : isShort ? "#fff8e1" : "#e8f8e8",
-                                        color: hasNoBooking ? "#996600" : isExcess ? "#a80000" : isShort ? "#996600" : "#107c10",
-                                        border: `1px solid ${hasNoBooking ? "#ffd54f" : isExcess ? "#f0a0a0" : isShort ? "#ffd54f" : "#90d090"}`
-                                      }}>
-                                        {hasNoBooking ? "No TDS" : isExcess ? "Excess" : isShort ? "Short" : "OK"}
-                                      </span>
-                                    </td>
-                                    <td>
-                                      <button 
-                                        onClick={() => setInvoiceTdsModal({
-                                          invoiceNo: inv.invoiceNo,
-                                          invData: inv,
-                                          tdsBooked,
-                                          tdsPercent: tdsPercent.toFixed(2),
-                                          linkedRows: booksEntries,
-                                          taxableVal
-                                        })}
-                                        style={{
-                                          background: booksEntries.length > 0 ? "#e6f3fb" : "#f5f5f5",
-                                          border: `1px solid ${booksEntries.length > 0 ? "#0078d4" : "#ddd"}`,
-                                          borderRadius: 3,
-                                          padding: "3px 8px",
-                                          cursor: "pointer",
-                                          fontSize: 10,
-                                          color: booksEntries.length > 0 ? "#0078d4" : "#999",
-                                          fontFamily: "inherit"
-                                        }}
-                                        title="View TDS booking details"
-                                      >
-                                        👁 View
-                                      </button>
-                                    </td>
-                                  </tr>
-                                );
-                              })}
+                            {(datasets["Invoices"]||[]).filter(inv=>!searchQ||(inv.partnerName||'').toLowerCase().includes(searchQ.toLowerCase())||(inv.invoiceNo||'').toLowerCase().includes(searchQ.toLowerCase())).map((inv,idx)=>{
+                              const invNo=(inv.invoiceNo||'').trim().toUpperCase();
+                              const booksEntries=(datasets["Books"]||[]).filter(b=>(b.invoiceNo||'').trim().toUpperCase()===invNo);
+                              const tdsBooked=booksEntries.reduce((s,b)=>s+(b.tdsDeducted||0),0);
+                              const taxableVal=inv.amountUntaxed||0;
+                              const tdsPercent=taxableVal>0?((tdsBooked/taxableVal)*100):0;
+                              const isExcess=tdsBooked>taxableVal*0.105;
+                              const hasNoTds=tdsBooked===0;
+                              return(
+                                <tr key={inv.id||idx} style={{background:isExcess?"#fff8f8":hasNoTds?"#fffaf0":idx%2===0?"#fff":"#fafafa"}}>
+                                  <td style={{color:"#aaa"}}>{idx+1}</td>
+                                  <td title={inv.partnerName} style={{fontWeight:500,maxWidth:200,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{inv.partnerName||"—"}</td>
+                                  <td><span style={{fontFamily:"Consolas,monospace",color:"var(--a)",fontSize:11,fontWeight:600}}>{inv.invoiceNo||"—"}</span></td>
+                                  <td style={{fontFamily:"Consolas,monospace",fontSize:11}}>{inv.invoiceDate||"—"}</td>
+                                  <td className="num" style={{fontWeight:600,color:"#107c10"}}>₹{taxableVal.toLocaleString("en-IN",{minimumFractionDigits:2})}</td>
+                                  <td className="num" style={{fontWeight:600,color:isExcess?"#a80000":hasNoTds?"#d59300":"#0078d4"}}>{tdsBooked>0?`₹${tdsBooked.toLocaleString("en-IN",{minimumFractionDigits:2})}`:"—"}</td>
+                                  <td className="num" style={{fontWeight:600,color:isExcess?"#a80000":"#5c2d91"}}>{tdsBooked>0?`${tdsPercent.toFixed(2)}%`:"—"}{isExcess&&<span style={{marginLeft:2}}>⚠</span>}</td>
+                                  <td><span style={{display:"inline-block",padding:"2px 8px",borderRadius:10,fontSize:10,fontWeight:600,background:hasNoTds?"#fff4e0":isExcess?"#fde7e9":"#e8f8e8",color:hasNoTds?"#996600":isExcess?"#a80000":"#107c10"}}>{hasNoTds?"No TDS":isExcess?"Excess":"OK"}</span></td>
+                                </tr>
+                              );
+                            })}
                           </tbody>
                         </table>
                       </div>
                       <div className="smb">
                         <div className="si">Total Invoices: <span className="sv2">{(datasets["Invoices"]||[]).length}</span></div>
                         <div className="si">Total Taxable: <span className="sv2" style={{color:"#107c10"}}>₹{(datasets["Invoices"]||[]).reduce((s,r)=>s+(r.amountUntaxed||0),0).toLocaleString("en-IN",{minimumFractionDigits:2})}</span></div>
-                        <div className="si">Total TDS Booked: <span className="sv2" style={{color:"#0078d4"}}>₹{
-                          (datasets["Invoices"]||[]).reduce((total, inv) => {
-                            const invNo = (inv.invoiceNo||'').trim().toUpperCase();
-                            const tds = (datasets["Books"]||[])
-                              .filter(b => (b.invoiceNo||'').trim().toUpperCase() === invNo)
-                              .reduce((s, b) => s + (b.tdsDeducted || 0), 0);
-                            return total + tds;
-                          }, 0).toLocaleString("en-IN",{minimumFractionDigits:2})
-                        }</span></div>
-                        <div className="si">No TDS: <span className="sv2" style={{color:"#d59300"}}>{
-                          (datasets["Invoices"]||[]).filter(inv => {
-                            const invNo = (inv.invoiceNo||'').trim().toUpperCase();
-                            const tds = (datasets["Books"]||[])
-                              .filter(b => (b.invoiceNo||'').trim().toUpperCase() === invNo)
-                              .reduce((s, b) => s + (b.tdsDeducted || 0), 0);
-                            return tds === 0;
-                          }).length
-                        }</span></div>
-                        <div className="si">Excess TDS: <span className="sv2" style={{color:"#a80000"}}>{
-                          (datasets["Invoices"]||[]).filter(inv => {
-                            const invNo = (inv.invoiceNo||'').trim().toUpperCase();
-                            const tds = (datasets["Books"]||[])
-                              .filter(b => (b.invoiceNo||'').trim().toUpperCase() === invNo)
-                              .reduce((s, b) => s + (b.tdsDeducted || 0), 0);
-                            const expected = (inv.amountUntaxed || 0) * 0.10;
-                            return tds > expected * 1.05;
-                          }).length
-                        }</span></div>
+                        <div className="si">No TDS: <span className="sv2" style={{color:"#d59300"}}>{(datasets["Invoices"]||[]).filter(inv=>{const invNo=(inv.invoiceNo||'').trim().toUpperCase();return(datasets["Books"]||[]).filter(b=>(b.invoiceNo||'').trim().toUpperCase()===invNo).reduce((s,b)=>s+(b.tdsDeducted||0),0)===0;}).length}</span></div>
+                        <div className="si">Excess TDS: <span className="sv2" style={{color:"#a80000"}}>{(datasets["Invoices"]||[]).filter(inv=>{const invNo=(inv.invoiceNo||'').trim().toUpperCase();const tds=(datasets["Books"]||[]).filter(b=>(b.invoiceNo||'').trim().toUpperCase()===invNo).reduce((s,b)=>s+(b.tdsDeducted||0),0);return tds>(inv.amountUntaxed||0)*0.105;}).length}</span></div>
                       </div>
                     </>
                   )
-                ) : activeData.length===0?(
+                ):activeData.length===0?(
                   <div className="emp"><Ic d={I.grid} s={44} c="#d1d1d1" sw={1}/><p>No {selDS} data loaded</p><p className="sub">Go to Import Data</p><button className="ib" style={{marginTop:8}} onClick={()=>setView("import")}>Import Files</button></div>
                 ):(
                   <>
@@ -5555,160 +5308,6 @@ export default function App() {
 
             {detailTAN&&(
               <TanDetailModal tan={detailTAN} tanRow={liveResults.find(r=>r.tan===detailTAN)} txns26AS={datasets["26AS"]} txnsBooks={datasets["Books"]} txnsInvoices={datasets["Invoices"]||[]} onClose={()=>setDetailTAN(null)} fmt={fmt} FmtDiff={FmtDiff} odooUrl={curCompany.odooUrl || companies.find(c=>c.odooEnabled&&c.odooUrl)?.odooUrl || ''} tanMaster={tanMaster}/>
-            )}
-
-            {/* Invoice TDS Booking Details Modal */}
-            {invoiceTdsModal && (
-              <div 
-                className="modal-bg"
-                onClick={e => e.target === e.currentTarget && setInvoiceTdsModal(null)}
-              >
-                <div style={{background:"#fff",borderRadius:8,width:620,maxHeight:"85vh",overflow:"hidden",boxShadow:"0 8px 32px rgba(0,0,0,0.25)"}}>
-                  {/* Header */}
-                  <div style={{background:"linear-gradient(135deg, #5c2d91 0%, #0078d4 100%)",padding:"18px 24px",color:"#fff"}}>
-                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
-                      <div>
-                        <div style={{fontSize:10,opacity:0.8,textTransform:"uppercase",letterSpacing:1,marginBottom:4}}>TDS Booking Details</div>
-                        <div style={{fontSize:18,fontWeight:700,fontFamily:"Consolas,monospace"}}>{invoiceTdsModal.invoiceNo}</div>
-                        {invoiceTdsModal.invData?.partnerName && (
-                          <div style={{fontSize:12,opacity:0.9,marginTop:4}}>{invoiceTdsModal.invData.partnerName}</div>
-                        )}
-                      </div>
-                      <button 
-                        onClick={() => setInvoiceTdsModal(null)}
-                        style={{background:"rgba(255,255,255,0.2)",border:"none",borderRadius:4,padding:"6px 10px",cursor:"pointer",color:"#fff",fontSize:16}}
-                      >✕</button>
-                    </div>
-                  </div>
-
-                  {/* Summary Cards */}
-                  <div style={{padding:"18px 24px",background:"#f8f9fa",borderBottom:"1px solid #e0e0e0",display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:14}}>
-                    <div style={{background:"#fff",padding:"14px 16px",borderRadius:6,border:"1px solid #e0e0e0",borderLeft:"4px solid #107c10"}}>
-                      <div style={{fontSize:10,color:"#666",textTransform:"uppercase",marginBottom:5}}>Taxable Value</div>
-                      <div style={{fontSize:20,fontWeight:700,color:"#107c10",fontFamily:"Consolas,monospace"}}>
-                        ₹{(invoiceTdsModal.taxableVal||0).toLocaleString("en-IN",{minimumFractionDigits:2})}
-                      </div>
-                    </div>
-                    <div style={{background:"#fff",padding:"14px 16px",borderRadius:6,border:"1px solid #e0e0e0",borderLeft:"4px solid #0078d4"}}>
-                      <div style={{fontSize:10,color:"#666",textTransform:"uppercase",marginBottom:5}}>TDS Booked</div>
-                      <div style={{fontSize:20,fontWeight:700,color:"#0078d4",fontFamily:"Consolas,monospace"}}>
-                        ₹{(invoiceTdsModal.tdsBooked||0).toLocaleString("en-IN",{minimumFractionDigits:2})}
-                      </div>
-                    </div>
-                    <div style={{background:"#fff",padding:"14px 16px",borderRadius:6,border:`1px solid ${parseFloat(invoiceTdsModal.tdsPercent) > 10.5 ? "#f0a0a0" : "#e0e0e0"}`,borderLeft:`4px solid ${parseFloat(invoiceTdsModal.tdsPercent) > 10.5 ? "#a80000" : "#5c2d91"}`}}>
-                      <div style={{fontSize:10,color:"#666",textTransform:"uppercase",marginBottom:5}}>TDS Rate</div>
-                      <div style={{fontSize:20,fontWeight:700,color:parseFloat(invoiceTdsModal.tdsPercent) > 10.5 ? "#a80000" : "#5c2d91",fontFamily:"Consolas,monospace"}}>
-                        {invoiceTdsModal.tdsPercent}%
-                        {parseFloat(invoiceTdsModal.tdsPercent) > 10.5 && <span style={{fontSize:12,marginLeft:8}}>⚠ Excess</span>}
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Expected vs Actual Analysis */}
-                  <div style={{padding:"14px 24px",background:"#fff",borderBottom:"1px solid #e0e0e0"}}>
-                    <div style={{display:"flex",gap:24,fontSize:12,flexWrap:"wrap"}}>
-                      <div>
-                        <span style={{color:"#666"}}>Expected TDS @10%: </span>
-                        <span style={{fontWeight:600,fontFamily:"Consolas,monospace",color:"#107c10"}}>
-                          ₹{((invoiceTdsModal.taxableVal||0) * 0.10).toLocaleString("en-IN",{minimumFractionDigits:2})}
-                        </span>
-                      </div>
-                      <div>
-                        <span style={{color:"#666"}}>Difference: </span>
-                        {(() => {
-                          const expected = (invoiceTdsModal.taxableVal||0) * 0.10;
-                          const diff = (invoiceTdsModal.tdsBooked||0) - expected;
-                          const isExcess = diff > 1;
-                          const isShort = diff < -1;
-                          return (
-                            <span style={{fontWeight:600,fontFamily:"Consolas,monospace",color:isExcess?"#a80000":isShort?"#d59300":"#107c10"}}>
-                              {isExcess ? "+" : ""}{diff.toLocaleString("en-IN",{minimumFractionDigits:2})}
-                              {isExcess && " (Excess TDS)"}
-                              {isShort && " (Short)"}
-                              {!isExcess && !isShort && " ✓ OK"}
-                            </span>
-                          );
-                        })()}
-                      </div>
-                      {invoiceTdsModal.invData?.invoiceDate && (
-                        <div>
-                          <span style={{color:"#666"}}>Invoice Date: </span>
-                          <span style={{fontWeight:600}}>{invoiceTdsModal.invData.invoiceDate}</span>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* TDS Booking Entries Table */}
-                  <div style={{padding:"18px 24px",maxHeight:320,overflowY:"auto"}}>
-                    <div style={{fontSize:13,fontWeight:600,color:"#333",marginBottom:12,display:"flex",alignItems:"center",gap:8}}>
-                      <span style={{fontSize:16}}>📘</span>
-                      Books TDS Entries ({invoiceTdsModal.linkedRows?.length || 0})
-                    </div>
-                    {(!invoiceTdsModal.linkedRows || invoiceTdsModal.linkedRows.length === 0) ? (
-                      <div style={{padding:"32px",textAlign:"center",color:"#999",fontSize:13,background:"#f8f8f8",borderRadius:8,border:"2px dashed #ddd"}}>
-                        <div style={{fontSize:32,marginBottom:10}}>📭</div>
-                        <div style={{fontWeight:600,marginBottom:4}}>No TDS booked against this invoice</div>
-                        <div style={{fontSize:11,color:"#aaa"}}>TDS entries will appear here once booked in Books data</div>
-                      </div>
-                    ) : (
-                      <table style={{width:"100%",borderCollapse:"collapse",fontSize:12,border:"1px solid #e0e0e0",borderRadius:6,overflow:"hidden"}}>
-                        <thead>
-                          <tr style={{background:"linear-gradient(to right, #f0f4f8, #e6f0f8)"}}>
-                            <th style={{padding:"10px 12px",textAlign:"left",fontWeight:600,color:"#444",borderBottom:"2px solid #0078d4"}}>S.No.</th>
-                            <th style={{padding:"10px 12px",textAlign:"left",fontWeight:600,color:"#444",borderBottom:"2px solid #0078d4"}}>Date</th>
-                            <th style={{padding:"10px 12px",textAlign:"left",fontWeight:600,color:"#444",borderBottom:"2px solid #0078d4"}}>Party Name</th>
-                            <th style={{padding:"10px 12px",textAlign:"left",fontWeight:600,color:"#444",borderBottom:"2px solid #0078d4"}}>Quarter</th>
-                            <th style={{padding:"10px 12px",textAlign:"left",fontWeight:600,color:"#444",borderBottom:"2px solid #0078d4"}}>Section</th>
-                            <th style={{padding:"10px 12px",textAlign:"right",fontWeight:600,color:"#444",borderBottom:"2px solid #0078d4"}}>TDS Amount</th>
-                            <th style={{padding:"10px 12px",textAlign:"right",fontWeight:600,color:"#444",borderBottom:"2px solid #0078d4"}}>Rate %</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {invoiceTdsModal.linkedRows.map((row, idx) => {
-                            const rowRate = invoiceTdsModal.taxableVal > 0 
-                              ? ((row.tdsDeducted || 0) / invoiceTdsModal.taxableVal * 100).toFixed(2)
-                              : "—";
-                            return (
-                              <tr key={idx} style={{borderBottom:"1px solid #f0f0f0",background:idx%2===0?"#fff":"#fafafa"}}>
-                                <td style={{padding:"10px 12px",color:"#999",fontWeight:600}}>{idx + 1}</td>
-                                <td style={{padding:"10px 12px",fontFamily:"Consolas,monospace",fontSize:11}}>{row.date || row.invoiceDate || "—"}</td>
-                                <td style={{padding:"10px 12px",fontWeight:500,maxWidth:150,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={row.deductorName}>{row.deductorName || "—"}</td>
-                                <td style={{padding:"10px 12px"}}><span style={{background:"#e8f8e8",color:"#107c10",padding:"3px 10px",borderRadius:12,fontSize:10,fontWeight:600}}>{row.quarter || "—"}</span></td>
-                                <td style={{padding:"10px 12px"}}><span style={{background:"#f0e8ff",color:"#5c2d91",padding:"3px 10px",borderRadius:12,fontSize:10,fontWeight:600}}>{row.section || "—"}</span></td>
-                                <td style={{padding:"10px 12px",textAlign:"right",fontFamily:"Consolas,monospace",fontWeight:700,color:"#0078d4",fontSize:13}}>
-                                  ₹{(row.tdsDeducted || 0).toLocaleString("en-IN",{minimumFractionDigits:2})}
-                                </td>
-                                <td style={{padding:"10px 12px",textAlign:"right",fontFamily:"Consolas,monospace",color:"#666"}}>{rowRate}%</td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                        <tfoot>
-                          <tr style={{background:"linear-gradient(to right, #e6f3fb, #d6ebfb)"}}>
-                            <td colSpan={5} style={{padding:"12px",fontWeight:700,color:"#0078d4",fontSize:13}}>Total TDS Booked</td>
-                            <td style={{padding:"12px",textAlign:"right",fontFamily:"Consolas,monospace",color:"#0078d4",fontWeight:700,fontSize:15}}>
-                              ₹{(invoiceTdsModal.tdsBooked || 0).toLocaleString("en-IN",{minimumFractionDigits:2})}
-                            </td>
-                            <td style={{padding:"12px",textAlign:"right",fontFamily:"Consolas,monospace",color:"#5c2d91",fontWeight:700}}>{invoiceTdsModal.tdsPercent}%</td>
-                          </tr>
-                        </tfoot>
-                      </table>
-                    )}
-                  </div>
-
-                  {/* Footer */}
-                  <div style={{padding:"14px 24px",background:"#f0f0f0",borderTop:"1px solid #e0e0e0",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-                    <div style={{fontSize:11,color:"#888"}}>
-                      Invoice: <span style={{fontFamily:"Consolas,monospace",color:"#0078d4",fontWeight:600}}>{invoiceTdsModal.invoiceNo}</span>
-                    </div>
-                    <button 
-                      onClick={() => setInvoiceTdsModal(null)}
-                      style={{background:"#0078d4",color:"#fff",border:"none",borderRadius:4,padding:"9px 24px",cursor:"pointer",fontSize:12,fontWeight:600}}
-                    >Close</button>
-                  </div>
-                </div>
-              </div>
             )}
 
             {view==="tanmaster"&&(
