@@ -608,7 +608,8 @@ function TanDetailModal({ tan, tanRow, txns26AS, txnsBooks, txnsInvoices, onClos
     const partnerName = (tanRow?.bk_name || tanRow?.as_name || '').trim();
     const partnerInvoices = txnsInvoices.filter(inv => {
       const ip = norm(inv.partnerName), tp = norm(partnerName);
-      return ip === tp || ip.includes(tp.slice(0,12)) || tp.includes(ip.slice(0,12));
+      if (!tp || tp.length < 4) return ip === tp; // require exact match for very short/empty names
+      return ip === tp || ip.includes(tp.slice(0, 12)) || tp.includes(ip.slice(0, 12));
     });
     if (!partnerInvoices.length) { alert('No invoices found for this party in synced data.'); return; }
     const bookedInvNos = new Set(bk.map(r=>(r.invoiceNo||'').trim().toUpperCase()).filter(Boolean));
@@ -2634,15 +2635,22 @@ export default function App() {
           syncType: odooSyncType
         });
       } else {
-        // Web: use server proxy
+        // Web: use server proxy — invoice sync uses its own endpoint
         setOdooSyncProgress({ step: 'auth', message: 'Connecting via server proxy...', count: 0 });
-        const proxyResult = await syncTDSViaServer({
-          odooUrl: odooCredentials.url,
-          odooDatabase: odooCredentials.database,
-          odooUsername: odooCredentials.username,
-          odooPassword: odooCredentials.password,
-          prefixes: companyPrefixes
-        }, fyStart, fyEnd);
+        const endpoint = odooSyncType === 'invoices' ? '/api/odoo/sync-invoices' : '/api/odoo/sync-tds';
+        const proxyResult = await fetch(`${SERVER_BASE}${endpoint}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            url: odooCredentials.url,
+            db: odooCredentials.database,
+            username: odooCredentials.username,
+            apiKey: odooCredentials.password,
+            fyStart,
+            fyEnd,
+            prefixes: companyPrefixes.join(',')
+          })
+        }).then(r => r.json());
         if (proxyResult.ok) {
           result = { success: true, records: proxyResult.data };
         } else {
