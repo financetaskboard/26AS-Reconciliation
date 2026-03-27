@@ -884,7 +884,8 @@ function copyInv(invNo, btn) {
       const data = await res.json();
       
       if (data.ok) {
-        alert(`✅ Success!\n\nCreated: ${data.created} entries\nFailed: ${data.failed} entries${data.failed > 0 ? '\n\nCheck console for details.' : ''}`);
+        const failedDetails = data.results?.filter(r => r.status === 'error').map(r => `• ${r.invoiceNo}: ${r.error}`).join('\n') || '';
+        alert(`✅ Success!\n\nCreated: ${data.created} entries\nFailed: ${data.failed} entries${data.failed > 0 ? `\n\nErrors:\n${failedDetails}` : ''}`);
       } else {
         alert(`❌ Error: ${data.error}`);
       }
