@@ -515,7 +515,7 @@ const css = `
 `;
 
 // ── TAN DETAIL MODAL ──────────────────────────────────────────────────────────
-function TanDetailModal({ tan, tanRow, txns26AS, txnsBooks, txnsInvoices, onClose, fmt, FmtDiff, odooUrl, tanMaster }) {
+function TanDetailModal({ tan, tanRow, txns26AS, txnsBooks, txnsInvoices, onClose, fmt, FmtDiff, odooUrl, odooConfig, tanMaster }) {
   const as = txns26AS.filter(r => r.tan?.toUpperCase().trim() === tan);
 
   // Expand Books rows — Odoo may store combined invoice refs joined by '.'
@@ -813,6 +813,86 @@ function copyInv(invNo, btn) {
     a.click();
   };
 
+  // Push journal entries directly to Odoo
+  const pushToOdoo = async () => {
+    const matchedAsIds = new Set(groups.flatMap(g=>[...g.asIds]));
+    const allUnbooked = as.filter(r => !matchedAsIds.has(r.id));
+    const unbooked = allUnbooked.filter(r => (invoiceLinks[r.id] || r.invoiceNo || '').trim());
+    
+    if (!unbooked.length) {
+      alert('No invoice links found. Please link invoices to the unbooked 26AS rows first.');
+      return;
+    }
+
+    // Find Odoo credentials from tanMaster or use default
+    const master = tanMaster || [];
+    const partnerIdMap = {};
+    master.forEach(r => { if (r.tan && r.odooPartnerId) partnerIdMap[r.tan] = r.odooPartnerId; });
+    const partnerExtId = partnerIdMap[tan] || '';
+    
+    // Use odooConfig prop or fallback to window.__odooConfig
+    const config = odooConfig || window.__odooConfig;
+    if (!config || !config.url) {
+      alert('Odoo not configured. Please configure Odoo in Client settings first, or sync from Odoo to establish connection.');
+      return;
+    }
+
+    const today = new Date().toISOString().slice(0, 10);
+    
+    // Build entries array
+    const entries = [];
+    unbooked.forEach((r) => {
+      const tdsAmt = r.tdsDeposited || r.tdsDeducted || 0;
+      const invoiceNoStr = (invoiceLinks[r.id] || r.invoiceNo || '').trim();
+      const invNos = invoiceNoStr.split(',').map(s => s.trim()).filter(Boolean);
+      
+      if (invNos.length <= 1) {
+        entries.push({ invoiceNo: invoiceNoStr, amount: tdsAmt, date: today, partnerExternalId: partnerExtId });
+      } else {
+        // Multiple invoices — split proportionally
+        const invAmts = invNos.map(invNo => {
+          const inv = txnsInvoices?.find(i => (i.invoiceNo||'').trim().toUpperCase() === invNo.toUpperCase());
+          return { invNo, amt: inv?.amountUntaxed || 0 };
+        });
+        const totalAmt = invAmts.reduce((s, i) => s + i.amt, 0);
+        invAmts.forEach((inv) => {
+          const proportion = totalAmt > 0 ? inv.amt / totalAmt : 1 / invNos.length;
+          const splitTds = Math.round(tdsAmt * proportion * 100) / 100;
+          entries.push({ invoiceNo: inv.invNo, amount: splitTds, date: today, partnerExternalId: partnerExtId });
+        });
+      }
+    });
+
+    if (!window.confirm(`Push ${entries.length} journal entries to Odoo?\n\nThis will create TDS Receivable entries for:\n${entries.slice(0,5).map(e => `• ${e.invoiceNo}: ₹${e.amount.toLocaleString('en-IN')}`).join('\n')}${entries.length > 5 ? `\n... and ${entries.length - 5} more` : ''}`)) {
+      return;
+    }
+
+    try {
+      const res = await fetch(`${window.location.origin}/api/odoo/create-journal-entries`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          url: config.url,
+          db: config.database,
+          username: config.username,
+          apiKey: config.password,
+          entries,
+          tdsAccountCode: '231110',
+          debtorAccountCode: '251000'
+        })
+      });
+      const data = await res.json();
+      
+      if (data.ok) {
+        alert(`✅ Success!\n\nCreated: ${data.created} entries\nFailed: ${data.failed} entries${data.failed > 0 ? '\n\nCheck console for details.' : ''}`);
+      } else {
+        alert(`❌ Error: ${data.error}`);
+      }
+    } catch (err) {
+      alert(`❌ Network error: ${err.message}`);
+    }
+  };
+
   const matchedAsIds  = new Set(groups.flatMap(g=>[...g.asIds]));
   const matchedBkIds  = new Set(groups.flatMap(g=>[...g.bkIds]));
   const unbookedCount = as.filter(r => !matchedAsIds.has(r.id)).length;
@@ -862,7 +942,10 @@ function copyInv(invNo, btn) {
             {groups.length>0 && <button onClick={clearAll} style={{padding:"4px 10px",fontSize:11,border:"1px solid #fde7e9",borderRadius:3,cursor:"pointer",background:"#fff8f8",color:"var(--red)",fontFamily:"inherit"}}>✕ Clear All</button>}
             {unbookedCount>0 && (() => {
               const linkedCount = as.filter(r => !matchedAsIds.has(r.id) && (invoiceLinks[r.id]||r.invoiceNo||'').trim()).length;
-              return <button onClick={exportUnbooked} style={{padding:"4px 10px",fontSize:11,border:"1px solid #107c10",borderRadius:3,cursor:"pointer",background:"#e8f8e8",color:"#107c10",fontFamily:"inherit",fontWeight:600}}>⬇ Export Unbooked ({linkedCount}/{unbookedCount} linked)</button>;
+              return <>
+                <button onClick={exportUnbooked} style={{padding:"4px 10px",fontSize:11,border:"1px solid #107c10",borderRadius:3,cursor:"pointer",background:"#e8f8e8",color:"#107c10",fontFamily:"inherit",fontWeight:600}}>⬇ Export ({linkedCount}/{unbookedCount})</button>
+                <button onClick={pushToOdoo} style={{padding:"4px 10px",fontSize:11,border:"1px solid #5c2d91",borderRadius:3,cursor:"pointer",background:"#f0e8ff",color:"#5c2d91",fontFamily:"inherit",fontWeight:600}}>🚀 Push to Odoo ({linkedCount})</button>
+              </>;
             })()}
             {unbookedCount>0 && txnsInvoices && txnsInvoices.length>0 && <button onClick={openInvoiceTab} style={{padding:"4px 10px",fontSize:11,border:"1px solid #0078d4",borderRadius:3,cursor:"pointer",background:"#e6f3fb",color:"#0078d4",fontFamily:"inherit",fontWeight:600}}>↗ View Invoices</button>}
           </div>
@@ -2664,6 +2747,14 @@ export default function App() {
       return;
     }
     
+    // Store config globally for push-to-odoo feature
+    window.__odooConfig = {
+      url: odooCredentials.url,
+      database: odooCredentials.database,
+      username: odooCredentials.username,
+      password: odooCredentials.password
+    };
+    
     // Start sync
     setOdooSyncStarted(true);
     setOdooSyncComplete(false);
@@ -2737,6 +2828,14 @@ export default function App() {
       if (!result.success) {
         throw new Error(result.error || 'Odoo sync failed');
       }
+      
+      // Store Odoo config for push-to-odoo feature
+      window.__odooConfig = {
+        url: odooCredentials.url,
+        database: odooCredentials.database,
+        username: odooCredentials.username,
+        password: odooCredentials.password
+      };
       
       const odooRecords = result.records || [];
       
@@ -5246,7 +5345,7 @@ export default function App() {
             )}
 
             {detailTAN&&(
-              <TanDetailModal tan={detailTAN} tanRow={liveResults.find(r=>r.tan===detailTAN)} txns26AS={datasets["26AS"]} txnsBooks={datasets["Books"]} txnsInvoices={datasets["Invoices"]||[]} onClose={()=>setDetailTAN(null)} fmt={fmt} FmtDiff={FmtDiff} odooUrl={curCompany.odooUrl || companies.find(c=>c.odooEnabled&&c.odooUrl)?.odooUrl || ''} tanMaster={tanMaster}/>
+              <TanDetailModal tan={detailTAN} tanRow={liveResults.find(r=>r.tan===detailTAN)} txns26AS={datasets["26AS"]} txnsBooks={datasets["Books"]} txnsInvoices={datasets["Invoices"]||[]} onClose={()=>setDetailTAN(null)} fmt={fmt} FmtDiff={FmtDiff} odooUrl={curCompany.odooUrl || companies.find(c=>c.odooEnabled&&c.odooUrl)?.odooUrl || ''} odooConfig={curCompany.odooEnabled ? {url:curCompany.odooUrl,database:curCompany.odooDatabase,username:curCompany.odooUsername,password:curCompany.odooPassword} : (()=>{const oc=companies.find(c=>c.odooEnabled&&c.odooUrl);return oc?{url:oc.odooUrl,database:oc.odooDatabase,username:oc.odooUsername,password:oc.odooPassword}:null;})() } tanMaster={tanMaster}/>
             )}
 
             {view==="tanmaster"&&(
