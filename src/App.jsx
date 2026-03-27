@@ -539,8 +539,7 @@ function TanDetailModal({ tan, tanRow, txns26AS, txnsBooks, txnsInvoices, onClos
   const [groups, setGroups]   = useState([]);
   const [selBk,  setSelBk]    = useState(new Set()); // Books ids pending selection
   const [selAs,  setSelAs]    = useState(new Set()); // 26AS ids pending selection
-  const [invoiceLinks, setInvoiceLinks] = useState({}); // { [asRowId]: "INV1,INV2,..." } supports multiple invoices comma-separated
-  const [showTdsBookingModal, setShowTdsBookingModal] = useState(null); // TDS booking view modal
+  const [invoiceLinks, setInvoiceLinks] = useState({}); // { [asRowId]: invoiceNo } for unbooked rows
 
   const PAIR_COLORS = ['#e8f8e8','#e6f3fb','#fff4e0','#f0e8ff','#fff0e0','#fdf0f8'];
   const PAIR_BORDER = ['#107c10','#0078d4','#d59300','#5c2d91','#c7792a','#c71585'];
@@ -742,7 +741,6 @@ function copyInv(invNo, btn) {
   };
 
   // Export unmatched 26AS rows as CSV for journal entry booking
-  // Supports multiple invoices per 26AS row — each invoice gets its own row with proportional TDS split
   const exportUnbooked = () => {
     const matchedAsIds = new Set(groups.flatMap(g=>[...g.asIds]));
     const allUnbooked = as.filter(r => !matchedAsIds.has(r.id));
@@ -776,38 +774,26 @@ function copyInv(invNo, btn) {
     const drRows = [];
     const crRows = [];
 
-    // Helper to parse multiple invoices and get amounts
-    const getInvoiceAmounts = (invNosStr) => {
-      const invNos = invNosStr.split(',').map(s => s.trim()).filter(Boolean);
-      return invNos.map(invNo => {
-        const invData = txnsInvoices?.find(inv => (inv.invoiceNo||'').trim().toUpperCase() === invNo.toUpperCase());
-        return { invNo, amount: invData?.amountUntaxed || 0 };
-      });
-    };
-
-    let rowIdx = 0;
-    unbooked.forEach((r) => {
+    unbooked.forEach((r, idx) => {
       const tdsAmt = r.tdsDeposited || r.tdsDeducted || 0;
-      const invoiceNoStr = (invoiceLinks[r.id] || r.invoiceNo || '').trim();
-      const invoices = getInvoiceAmounts(invoiceNoStr);
-      
-      if (invoices.length <= 1) {
-        // Single invoice
-        const invoiceNo = invoices.length === 1 ? invoices[0].invNo : invoiceNoStr;
-        drRows.push([rowIdx === 0 ? today : '', rowIdx === 0 ? 'TDS Receivable' : '', partnerId, '231110 TDS Receivable 25-26', '', invoiceNo, tdsAmt]);
-        crRows.push(['', '', partnerId, '251000 Debtors', tdsAmt, invoiceNo, '']);
-        rowIdx++;
-      } else {
-        // Multiple invoices — split TDS proportionally
-        const totalInvAmt = invoices.reduce((s, inv) => s + inv.amount, 0);
-        invoices.forEach((inv) => {
-          const proportion = totalInvAmt > 0 ? inv.amount / totalInvAmt : 1 / invoices.length;
-          const splitTds = Math.round(tdsAmt * proportion * 100) / 100;
-          drRows.push([rowIdx === 0 ? today : '', rowIdx === 0 ? 'TDS Receivable' : '', partnerId, '231110 TDS Receivable 25-26', '', inv.invNo, splitTds]);
-          crRows.push(['', '', partnerId, '251000 Debtors', splitTds, inv.invNo, '']);
-          rowIdx++;
-        });
-      }
+      const invoiceNo = (invoiceLinks[r.id] || r.invoiceNo || '').trim();
+      drRows.push([
+        idx === 0 ? today : '',
+        idx === 0 ? 'TDS Receivable' : '',
+        partnerId,
+        '231110 TDS Receivable 25-26',
+        '',
+        invoiceNo,
+        tdsAmt,
+      ]);
+      crRows.push([
+        '', '',
+        partnerId,
+        '251000 Debtors',
+        tdsAmt,
+        invoiceNo,
+        '',
+      ]);
     });
 
     const xlsRows = [headers, ...drRows, ...crRows];
@@ -972,106 +958,50 @@ function copyInv(invNo, btn) {
                           <td style={{textAlign:"right",fontFamily:"Consolas,monospace",fontSize:11,color:"#a80000",fontWeight:600}}>{fmt(r.tdsDeducted)}</td>
                           <td style={{textAlign:"right",fontFamily:"Consolas,monospace",fontSize:11,color:"var(--grn)"}}>{fmt(r.tdsDeposited||r.tdsDeducted)}</td>
                           <td><span style={{fontFamily:"Consolas,monospace",fontSize:10,color:r.bookingStatus==="F"?"var(--grn)":"var(--amb)"}}>{r.bookingStatus||"—"}</span></td>
-                          <td onClick={e=>e.stopPropagation()} style={{minWidth:140,maxWidth:200}}>
+                          <td onClick={e=>e.stopPropagation()} style={{minWidth:140,maxWidth:180}}>
                             {!grp
                               ? (() => {
-                                  const linkedInvNoStr = invoiceLinks[r.id]||"";
-                                  // Support multiple invoices (comma-separated)
-                                  const linkedInvNos = linkedInvNoStr.split(',').map(s => s.trim()).filter(Boolean);
-                                  const hasMultiple = linkedInvNos.length > 1;
-                                  
-                                  // Look up first invoice for display
-                                  const firstInvNo = linkedInvNos[0] || "";
-                                  const invData = firstInvNo && txnsInvoices
-                                    ? txnsInvoices.find(inv => (inv.invoiceNo||'').trim().toUpperCase() === firstInvNo.toUpperCase())
+                                  const linkedInvNo = invoiceLinks[r.id]||"";
+                                  // Look up invoice amount from synced data
+                                  const invData = linkedInvNo && txnsInvoices
+                                    ? txnsInvoices.find(inv => (inv.invoiceNo||'').trim().toUpperCase() === linkedInvNo.trim().toUpperCase())
                                     : null;
-                                  
-                                  // Sum amounts for all linked invoices
-                                  const totalInvAmt = linkedInvNos.reduce((sum, invNo) => {
-                                    const inv = txnsInvoices?.find(i => (i.invoiceNo||'').trim().toUpperCase() === invNo.toUpperCase());
-                                    return sum + (inv?.amountUntaxed || 0);
-                                  }, 0);
-                                  
-                                  // Sum ALL 26AS rows linked to these invoices
-                                  const totalLinkedAmt = linkedInvNos.length > 0
-                                    ? as.filter(a => {
-                                        const aInvs = (invoiceLinks[a.id]||'').split(',').map(s=>s.trim().toUpperCase()).filter(Boolean);
-                                        return linkedInvNos.some(inv => aInvs.includes(inv.toUpperCase()));
-                                      }).reduce((s,a) => s + (a.amountPaid||0), 0)
+                                  const invAmt = invData ? invData.amountUntaxed : null;
+                                  // Sum ALL 26AS rows linked to this same invoice (could be split across multiple entries)
+                                  const totalLinkedAmt = linkedInvNo
+                                    ? as.filter(a => (invoiceLinks[a.id]||'').trim().toUpperCase() === linkedInvNo.trim().toUpperCase())
+                                        .reduce((s,a) => s + (a.amountPaid||0), 0)
                                     : (r.amountPaid||0);
-                                  const diff = totalInvAmt > 0 ? totalInvAmt - totalLinkedAmt : null;
-                                  
-                                  // TDS booked calculation
-                                  const getTdsBookedForInvoice = (invNo) => {
-                                    return bk.filter(b => (b.invoiceNo||'').trim().toUpperCase() === invNo.toUpperCase())
-                                             .reduce((s, b) => s + (b.tdsDeducted || 0), 0);
-                                  };
-                                  
+                                  const diff = invAmt !== null ? invAmt - totalLinkedAmt : null;
+                                  const multiLinked = linkedInvNo
+                                    ? as.filter(a => (invoiceLinks[a.id]||'').trim().toUpperCase() === linkedInvNo.trim().toUpperCase()).length > 1
+                                    : false;
                                   return (
                                     <div style={{padding:"2px 4px"}}>
                                       <div style={{display:"flex",alignItems:"center",gap:3}}>
                                         <input
-                                          value={linkedInvNoStr}
+                                          value={linkedInvNo}
                                           onChange={e=>setInvoiceLinks(prev=>({...prev,[r.id]:e.target.value}))}
-                                          placeholder="INV1, INV2…"
-                                          title="Paste invoice number(s) — use comma for multiple"
-                                          style={{flex:1,minWidth:0,border:`1px solid ${linkedInvNoStr?"#c7792a":"#ddd"}`,borderRadius:3,padding:"2px 5px",fontSize:10,fontFamily:"Consolas,monospace",color:"#c7792a",background:linkedInvNoStr?"#fff8f0":"transparent",outline:"none"}}
+                                          placeholder="Link invoice…"
+                                          title="Paste invoice number — exported in Label column"
+                                          style={{flex:1,minWidth:0,border:`1px solid ${linkedInvNo?"#c7792a":"#ddd"}`,borderRadius:3,padding:"2px 5px",fontSize:10,fontFamily:"Consolas,monospace",color:"#c7792a",background:linkedInvNo?"#fff8f0":"transparent",outline:"none"}}
                                           onFocus={e=>{e.target.style.border="1px solid #c7792a";e.target.style.background="#fff8f0";}}
-                                          onBlur={e=>{e.target.style.border=`1px solid ${linkedInvNoStr?"#c7792a":"#ddd"}`;e.target.style.background=linkedInvNoStr?"#fff8f0":"transparent";}}
+                                          onBlur={e=>{e.target.style.border=`1px solid ${linkedInvNo?"#c7792a":"#ddd"}`;e.target.style.background=linkedInvNo?"#fff8f0":"transparent";}}
                                         />
-                                        {linkedInvNoStr && <span title={hasMultiple?`${linkedInvNos.length} invoices`:"Linked"} style={{color:"#c7792a",fontSize:11,flexShrink:0}}>🔗{hasMultiple&&<sup style={{fontSize:8}}>{linkedInvNos.length}</sup>}</span>}
+                                        {linkedInvNo && <span title="Linked" style={{color:"#c7792a",fontSize:11,flexShrink:0}}>🔗</span>}
                                       </div>
-                                      {totalInvAmt > 0 && (
+                                      {invAmt !== null && (
                                         <div style={{marginTop:2,fontSize:9.5,display:"flex",gap:6,flexWrap:"wrap"}}>
                                           <span style={{color:"#107c10",fontFamily:"Consolas,monospace",fontWeight:600}}>
-                                            Inv: ₹{totalInvAmt.toLocaleString("en-IN",{maximumFractionDigits:0})}
+                                            Inv: ₹{invAmt.toLocaleString("en-IN",{maximumFractionDigits:0})}
                                           </span>
-                                          {hasMultiple && <span style={{color:"#5c2d91",fontSize:9}}>({linkedInvNos.length} inv)</span>}
-                                          {diff !== null && (
-                                            <span style={{color: Math.abs(diff)<1 ? "#107c10" : diff>0 ? "#0078d4" : "#a80000", fontFamily:"Consolas,monospace", fontWeight:600}}>
-                                              {Math.abs(diff)<1 ? "✓" : diff>0 ? `+₹${diff.toLocaleString("en-IN",{maximumFractionDigits:0})}` : `-₹${Math.abs(diff).toLocaleString("en-IN",{maximumFractionDigits:0})}`}
-                                            </span>
-                                          )}
+                                          {multiLinked && <span style={{color:"#0078d4",fontSize:9}}>({as.filter(a=>(invoiceLinks[a.id]||'').trim().toUpperCase()===linkedInvNo.trim().toUpperCase()).length} rows)</span>}
+                                          <span style={{color: Math.abs(diff)<1 ? "#107c10" : diff>0 ? "#0078d4" : "#a80000", fontFamily:"Consolas,monospace", fontWeight:600}}>
+                                            {Math.abs(diff)<1 ? "✓ exact" : diff>0 ? `+₹${diff.toLocaleString("en-IN",{maximumFractionDigits:0})} excess` : `-₹${Math.abs(diff).toLocaleString("en-IN",{maximumFractionDigits:0})} short`}
+                                          </span>
                                         </div>
                                       )}
-                                      {/* TDS Booking View Button */}
-                                      {linkedInvNos.length > 0 && linkedInvNos.some(inv => txnsInvoices?.find(i => (i.invoiceNo||'').trim().toUpperCase() === inv.toUpperCase())) && (
-                                        <div style={{marginTop:3,display:"flex",flexWrap:"wrap",gap:2}}>
-                                          {linkedInvNos.slice(0,2).map(invNo => {
-                                            const inv = txnsInvoices?.find(i => (i.invoiceNo||'').trim().toUpperCase() === invNo.toUpperCase());
-                                            if (!inv) return null;
-                                            const tdsBooked = getTdsBookedForInvoice(invNo);
-                                            const taxableVal = inv.amountUntaxed || 0;
-                                            const tdsPercent = taxableVal > 0 ? ((tdsBooked / taxableVal) * 100).toFixed(1) : 0;
-                                            const isExcess = tdsBooked > taxableVal * 0.105;
-                                            const linkedRows = bk.filter(b => (b.invoiceNo||'').trim().toUpperCase() === invNo.toUpperCase());
-                                            return (
-                                              <button
-                                                key={invNo}
-                                                onClick={(e) => {
-                                                  e.stopPropagation();
-                                                  setShowTdsBookingModal({ invoiceNo: invNo, invData: inv, tdsBooked, tdsPercent, linkedRows, taxableVal, as26Row: r });
-                                                }}
-                                                style={{
-                                                  display:"flex",alignItems:"center",gap:3,
-                                                  background: isExcess ? "#fff0f0" : tdsBooked > 0 ? "#e8f8e8" : "#f5f5f5",
-                                                  border: `1px solid ${isExcess ? "#f0a0a0" : tdsBooked > 0 ? "#90d090" : "#ddd"}`,
-                                                  borderRadius:3,padding:"1px 5px",cursor:"pointer",
-                                                  fontSize:9,fontFamily:"inherit",color:isExcess?"#a80000":tdsBooked>0?"#107c10":"#666"
-                                                }}
-                                                title={`TDS: ₹${tdsBooked.toLocaleString("en-IN")} (${tdsPercent}%)`}
-                                              >
-                                                <span style={{fontWeight:600}}>{hasMultiple ? invNo.slice(-6) : 'TDS'}</span>
-                                                <span style={{fontWeight:700}}>₹{tdsBooked.toLocaleString("en-IN",{maximumFractionDigits:0})}</span>
-                                                <span style={{opacity:0.7}}>({tdsPercent}%)</span>
-                                                {isExcess && <span>⚠</span>}
-                                              </button>
-                                            );
-                                          })}
-                                          {linkedInvNos.length > 2 && <span style={{fontSize:9,color:"#999"}}>+{linkedInvNos.length-2}</span>}
-                                        </div>
-                                      )}
-                                      {linkedInvNoStr && !invData && linkedInvNos.length === 1 && (
+                                      {linkedInvNo && !invData && (
                                         <div style={{marginTop:2,fontSize:9.5,color:"#d59300"}}>⚠ not in synced invoices</div>
                                       )}
                                     </div>
@@ -1101,67 +1031,6 @@ function copyInv(invNo, btn) {
           </div>
         </div>
       </div>
-
-      {/* TDS Booking Details Modal */}
-      {showTdsBookingModal && (
-        <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.5)",zIndex:2000,display:"flex",alignItems:"center",justifyContent:"center"}} onClick={e=>e.target===e.currentTarget&&setShowTdsBookingModal(null)}>
-          <div style={{background:"#fff",borderRadius:8,width:580,maxHeight:"80vh",overflow:"hidden",boxShadow:"0 8px 32px rgba(0,0,0,0.25)"}}>
-            <div style={{background:"linear-gradient(135deg, #5c2d91, #0078d4)",padding:"16px 20px",color:"#fff"}}>
-              <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start"}}>
-                <div>
-                  <div style={{fontSize:10,opacity:0.8,textTransform:"uppercase",letterSpacing:1,marginBottom:4}}>TDS Booking Details</div>
-                  <div style={{fontSize:16,fontWeight:700,fontFamily:"Consolas,monospace"}}>{showTdsBookingModal.invoiceNo}</div>
-                </div>
-                <button onClick={()=>setShowTdsBookingModal(null)} style={{background:"rgba(255,255,255,0.2)",border:"none",borderRadius:4,padding:"4px 8px",cursor:"pointer",color:"#fff",fontSize:14}}>✕</button>
-              </div>
-            </div>
-            <div style={{padding:"16px 20px",background:"#f8f9fa",borderBottom:"1px solid #e0e0e0",display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12}}>
-              <div style={{background:"#fff",padding:"12px",borderRadius:6,border:"1px solid #e0e0e0"}}>
-                <div style={{fontSize:10,color:"#666",textTransform:"uppercase",marginBottom:4}}>Taxable Value</div>
-                <div style={{fontSize:18,fontWeight:700,color:"#107c10",fontFamily:"Consolas,monospace"}}>₹{(showTdsBookingModal.taxableVal||0).toLocaleString("en-IN",{minimumFractionDigits:2})}</div>
-              </div>
-              <div style={{background:"#fff",padding:"12px",borderRadius:6,border:"1px solid #e0e0e0"}}>
-                <div style={{fontSize:10,color:"#666",textTransform:"uppercase",marginBottom:4}}>TDS Booked</div>
-                <div style={{fontSize:18,fontWeight:700,color:"#0078d4",fontFamily:"Consolas,monospace"}}>₹{(showTdsBookingModal.tdsBooked||0).toLocaleString("en-IN",{minimumFractionDigits:2})}</div>
-              </div>
-              <div style={{background:"#fff",padding:"12px",borderRadius:6,border:`1px solid ${parseFloat(showTdsBookingModal.tdsPercent)>10.5?"#f0a0a0":"#e0e0e0"}`}}>
-                <div style={{fontSize:10,color:"#666",textTransform:"uppercase",marginBottom:4}}>Tax Rate</div>
-                <div style={{fontSize:18,fontWeight:700,color:parseFloat(showTdsBookingModal.tdsPercent)>10.5?"#a80000":"#5c2d91",fontFamily:"Consolas,monospace"}}>{showTdsBookingModal.tdsPercent}%{parseFloat(showTdsBookingModal.tdsPercent)>10.5&&<span style={{fontSize:12,marginLeft:6}}>⚠</span>}</div>
-              </div>
-            </div>
-            <div style={{padding:"12px 20px",background:"#fff",borderBottom:"1px solid #e0e0e0",fontSize:12}}>
-              <span style={{color:"#666"}}>Expected @10%: </span>
-              <span style={{fontWeight:600,color:"#107c10",fontFamily:"Consolas,monospace"}}>₹{((showTdsBookingModal.taxableVal||0)*0.10).toLocaleString("en-IN",{minimumFractionDigits:2})}</span>
-              <span style={{color:"#666",marginLeft:16}}>Diff: </span>
-              {(()=>{const exp=(showTdsBookingModal.taxableVal||0)*0.10;const d=(showTdsBookingModal.tdsBooked||0)-exp;return<span style={{fontWeight:600,fontFamily:"Consolas,monospace",color:d>1?"#a80000":d<-1?"#d59300":"#107c10"}}>{d>0?"+":""}{d.toLocaleString("en-IN",{minimumFractionDigits:2})}{d>1?" (Excess)":d<-1?" (Short)":" ✓"}</span>;})()}
-            </div>
-            <div style={{padding:"16px 20px",maxHeight:250,overflowY:"auto"}}>
-              <div style={{fontSize:12,fontWeight:600,color:"#333",marginBottom:10}}>📘 Books Entries ({showTdsBookingModal.linkedRows?.length||0})</div>
-              {(!showTdsBookingModal.linkedRows||showTdsBookingModal.linkedRows.length===0)?(
-                <div style={{padding:"24px",textAlign:"center",color:"#999",fontSize:13,background:"#f8f8f8",borderRadius:6}}>No TDS booked against this invoice</div>
-              ):(
-                <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
-                  <thead><tr style={{background:"#f0f4f8"}}><th style={{padding:"8px",textAlign:"left",fontWeight:600,color:"#555",borderBottom:"2px solid #0078d4"}}>S.No.</th><th style={{padding:"8px",textAlign:"left",fontWeight:600,color:"#555",borderBottom:"2px solid #0078d4"}}>Date</th><th style={{padding:"8px",textAlign:"left",fontWeight:600,color:"#555",borderBottom:"2px solid #0078d4"}}>Quarter</th><th style={{padding:"8px",textAlign:"left",fontWeight:600,color:"#555",borderBottom:"2px solid #0078d4"}}>Section</th><th style={{padding:"8px",textAlign:"right",fontWeight:600,color:"#555",borderBottom:"2px solid #0078d4"}}>TDS Amount</th><th style={{padding:"8px",textAlign:"right",fontWeight:600,color:"#555",borderBottom:"2px solid #0078d4"}}>Rate</th></tr></thead>
-                  <tbody>
-                    {showTdsBookingModal.linkedRows.map((row,idx)=>{const rate=showTdsBookingModal.taxableVal>0?((row.tdsDeducted||0)/showTdsBookingModal.taxableVal*100).toFixed(2):"—";return(
-                      <tr key={idx} style={{borderBottom:"1px solid #f0f0f0",background:idx%2===0?"#fff":"#fafafa"}}>
-                        <td style={{padding:"8px",color:"#999"}}>{idx+1}</td>
-                        <td style={{padding:"8px",fontFamily:"Consolas,monospace",fontSize:11}}>{row.date||row.invoiceDate||"—"}</td>
-                        <td style={{padding:"8px"}}><span style={{background:"#e8f8e8",color:"#107c10",padding:"2px 8px",borderRadius:10,fontSize:10,fontWeight:600}}>{row.quarter||"—"}</span></td>
-                        <td style={{padding:"8px"}}><span style={{background:"#f0e8ff",color:"#5c2d91",padding:"2px 8px",borderRadius:10,fontSize:10,fontWeight:600}}>{row.section||"—"}</span></td>
-                        <td style={{padding:"8px",textAlign:"right",fontFamily:"Consolas,monospace",fontWeight:600,color:"#0078d4"}}>₹{(row.tdsDeducted||0).toLocaleString("en-IN",{minimumFractionDigits:2})}</td>
-                        <td style={{padding:"8px",textAlign:"right",fontFamily:"Consolas,monospace",color:"#666"}}>{rate}%</td>
-                      </tr>
-                    );})}
-                  </tbody>
-                  <tfoot><tr style={{background:"#e6f3fb"}}><td colSpan={4} style={{padding:"10px",fontWeight:700,color:"#0078d4"}}>Total</td><td style={{padding:"10px",textAlign:"right",fontFamily:"Consolas,monospace",fontWeight:700,color:"#0078d4"}}>₹{(showTdsBookingModal.tdsBooked||0).toLocaleString("en-IN",{minimumFractionDigits:2})}</td><td style={{padding:"10px",textAlign:"right",fontFamily:"Consolas,monospace",fontWeight:600,color:"#5c2d91"}}>{showTdsBookingModal.tdsPercent}%</td></tr></tfoot>
-                </table>
-              )}
-            </div>
-            <div style={{padding:"12px 20px",background:"#f0f0f0",borderTop:"1px solid #e0e0e0",display:"flex",justifyContent:"flex-end"}}><button onClick={()=>setShowTdsBookingModal(null)} style={{background:"#0078d4",color:"#fff",border:"none",borderRadius:4,padding:"8px 20px",cursor:"pointer",fontSize:12,fontWeight:600}}>Close</button></div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
@@ -5032,9 +4901,9 @@ export default function App() {
               <div className="dv">
                 <div className="dvtb">
                   <div className="dstabs">
-                    {["26AS","AIS","Books","Invoices"].map(ds=>(
+                    {["26AS","AIS","Books"].map(ds=>(
                       <div key={ds} className={`dst${selDS===ds?" on":""}`} onClick={()=>{setSelDS(ds);setSelRows(new Set());setSearchQ("");}}>
-                        {ds} ({ds==="Invoices"?(datasets["Invoices"]||[]).length:datasets[ds].length})
+                        {ds} ({datasets[ds].length})
                       </div>
                     ))}
                   </div>
@@ -5043,59 +4912,9 @@ export default function App() {
                     <input ref={searchRef} placeholder="Search..." value={searchQ} onChange={e=>setSearchQ(e.target.value)}/>
                     {searchQ&&<span onClick={()=>setSearchQ("")} style={{cursor:"pointer",color:"#999",fontSize:11}}>✕</span>}
                   </div>
-                  <div className="rc">{selDS==="Invoices"?`${(datasets["Invoices"]||[]).length} invoices`:(filtered.length!==activeData.length?`${filtered.length} of ${activeData.length}`:`${activeData.length} records`)}{selRows.size>0&&` · ${selRows.size} selected`}</div>
+                  <div className="rc">{filtered.length!==activeData.length?`${filtered.length} of ${activeData.length}`:`${activeData.length} records`}{selRows.size>0&&` · ${selRows.size} selected`}</div>
                 </div>
-                {selDS==="Invoices"?(
-                  (datasets["Invoices"]||[]).length===0?(
-                    <div className="emp"><Ic d={I.file} s={44} c="#d1d1d1" sw={1}/><p>No Invoice data loaded</p><p className="sub">Sync invoices from Odoo ERP</p><button className="ib" style={{marginTop:8}} onClick={()=>setView("import")}>Go to Import</button></div>
-                  ):(
-                    <>
-                      <div className="gw">
-                        <table className="dg">
-                          <thead><tr>
-                            <th style={{width:50}}>S.No.</th>
-                            <th style={{width:200}}>Name of Client</th>
-                            <th style={{width:140}}>Invoice No.</th>
-                            <th style={{width:100}}>Invoice Date</th>
-                            <th style={{width:130,textAlign:"right"}}>Taxable Value</th>
-                            <th style={{width:120,textAlign:"right"}}>Booked TDS</th>
-                            <th style={{width:80,textAlign:"right"}}>Tax Rate</th>
-                            <th style={{width:80}}>Status</th>
-                          </tr></thead>
-                          <tbody>
-                            {(datasets["Invoices"]||[]).filter(inv=>!searchQ||(inv.partnerName||'').toLowerCase().includes(searchQ.toLowerCase())||(inv.invoiceNo||'').toLowerCase().includes(searchQ.toLowerCase())).map((inv,idx)=>{
-                              const invNo=(inv.invoiceNo||'').trim().toUpperCase();
-                              const booksEntries=(datasets["Books"]||[]).filter(b=>(b.invoiceNo||'').trim().toUpperCase()===invNo);
-                              const tdsBooked=booksEntries.reduce((s,b)=>s+(b.tdsDeducted||0),0);
-                              const taxableVal=inv.amountUntaxed||0;
-                              const tdsPercent=taxableVal>0?((tdsBooked/taxableVal)*100):0;
-                              const isExcess=tdsBooked>taxableVal*0.105;
-                              const hasNoTds=tdsBooked===0;
-                              return(
-                                <tr key={inv.id||idx} style={{background:isExcess?"#fff8f8":hasNoTds?"#fffaf0":idx%2===0?"#fff":"#fafafa"}}>
-                                  <td style={{color:"#aaa"}}>{idx+1}</td>
-                                  <td title={inv.partnerName} style={{fontWeight:500,maxWidth:200,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{inv.partnerName||"—"}</td>
-                                  <td><span style={{fontFamily:"Consolas,monospace",color:"var(--a)",fontSize:11,fontWeight:600}}>{inv.invoiceNo||"—"}</span></td>
-                                  <td style={{fontFamily:"Consolas,monospace",fontSize:11}}>{inv.invoiceDate||"—"}</td>
-                                  <td className="num" style={{fontWeight:600,color:"#107c10"}}>₹{taxableVal.toLocaleString("en-IN",{minimumFractionDigits:2})}</td>
-                                  <td className="num" style={{fontWeight:600,color:isExcess?"#a80000":hasNoTds?"#d59300":"#0078d4"}}>{tdsBooked>0?`₹${tdsBooked.toLocaleString("en-IN",{minimumFractionDigits:2})}`:"—"}</td>
-                                  <td className="num" style={{fontWeight:600,color:isExcess?"#a80000":"#5c2d91"}}>{tdsBooked>0?`${tdsPercent.toFixed(2)}%`:"—"}{isExcess&&<span style={{marginLeft:2}}>⚠</span>}</td>
-                                  <td><span style={{display:"inline-block",padding:"2px 8px",borderRadius:10,fontSize:10,fontWeight:600,background:hasNoTds?"#fff4e0":isExcess?"#fde7e9":"#e8f8e8",color:hasNoTds?"#996600":isExcess?"#a80000":"#107c10"}}>{hasNoTds?"No TDS":isExcess?"Excess":"OK"}</span></td>
-                                </tr>
-                              );
-                            })}
-                          </tbody>
-                        </table>
-                      </div>
-                      <div className="smb">
-                        <div className="si">Total Invoices: <span className="sv2">{(datasets["Invoices"]||[]).length}</span></div>
-                        <div className="si">Total Taxable: <span className="sv2" style={{color:"#107c10"}}>₹{(datasets["Invoices"]||[]).reduce((s,r)=>s+(r.amountUntaxed||0),0).toLocaleString("en-IN",{minimumFractionDigits:2})}</span></div>
-                        <div className="si">No TDS: <span className="sv2" style={{color:"#d59300"}}>{(datasets["Invoices"]||[]).filter(inv=>{const invNo=(inv.invoiceNo||'').trim().toUpperCase();return(datasets["Books"]||[]).filter(b=>(b.invoiceNo||'').trim().toUpperCase()===invNo).reduce((s,b)=>s+(b.tdsDeducted||0),0)===0;}).length}</span></div>
-                        <div className="si">Excess TDS: <span className="sv2" style={{color:"#a80000"}}>{(datasets["Invoices"]||[]).filter(inv=>{const invNo=(inv.invoiceNo||'').trim().toUpperCase();const tds=(datasets["Books"]||[]).filter(b=>(b.invoiceNo||'').trim().toUpperCase()===invNo).reduce((s,b)=>s+(b.tdsDeducted||0),0);return tds>(inv.amountUntaxed||0)*0.105;}).length}</span></div>
-                      </div>
-                    </>
-                  )
-                ):activeData.length===0?(
+                {activeData.length===0?(
                   <div className="emp"><Ic d={I.grid} s={44} c="#d1d1d1" sw={1}/><p>No {selDS} data loaded</p><p className="sub">Go to Import Data</p><button className="ib" style={{marginTop:8}} onClick={()=>setView("import")}>Import Files</button></div>
                 ):(
                   <>
