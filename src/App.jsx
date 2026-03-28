@@ -830,6 +830,9 @@ function copyInv(invNo, btn) {
     master.forEach(r => { if (r.tan && r.odooPartnerId) partnerIdMap[r.tan] = r.odooPartnerId; });
     const partnerExtId = partnerIdMap[tan] || '';
     
+    // Get deductor name from tanRow (the TAN detail)
+    const deductorName = tanRow?.name || tanRow?.deductorName || '';
+    
     // Use odooConfig prop or fallback to window.__odooConfig
     const config = odooConfig || window.__odooConfig;
     if (!config || !config.url) {
@@ -839,7 +842,7 @@ function copyInv(invNo, btn) {
 
     const today = new Date().toISOString().slice(0, 10);
     
-    // Build entries array
+    // Build entries array with partner info
     const entries = [];
     unbooked.forEach((r) => {
       const tdsAmt = r.tdsDeposited || r.tdsDeducted || 0;
@@ -847,7 +850,7 @@ function copyInv(invNo, btn) {
       const invNos = invoiceNoStr.split(',').map(s => s.trim()).filter(Boolean);
       
       if (invNos.length <= 1) {
-        entries.push({ invoiceNo: invoiceNoStr, amount: tdsAmt, date: today, partnerExternalId: partnerExtId });
+        entries.push({ invoiceNo: invoiceNoStr, amount: tdsAmt, date: today, partnerExternalId: partnerExtId, partnerName: deductorName, tan });
       } else {
         // Multiple invoices — split proportionally
         const invAmts = invNos.map(invNo => {
@@ -858,12 +861,12 @@ function copyInv(invNo, btn) {
         invAmts.forEach((inv) => {
           const proportion = totalAmt > 0 ? inv.amt / totalAmt : 1 / invNos.length;
           const splitTds = Math.round(tdsAmt * proportion * 100) / 100;
-          entries.push({ invoiceNo: inv.invNo, amount: splitTds, date: today, partnerExternalId: partnerExtId });
+          entries.push({ invoiceNo: inv.invNo, amount: splitTds, date: today, partnerExternalId: partnerExtId, partnerName: deductorName, tan });
         });
       }
     });
 
-    if (!window.confirm(`Push ${entries.length} journal entries to Odoo?\n\nThis will create TDS Receivable entries for:\n${entries.slice(0,5).map(e => `• ${e.invoiceNo}: ₹${e.amount.toLocaleString('en-IN')}`).join('\n')}${entries.length > 5 ? `\n... and ${entries.length - 5} more` : ''}`)) {
+    if (!window.confirm(`Push ${entries.length} journal entries to Odoo?\n\nDeductor: ${deductorName || tan}\n\nEntries:\n${entries.slice(0,5).map(e => `• ${e.invoiceNo}: ₹${e.amount.toLocaleString('en-IN')}`).join('\n')}${entries.length > 5 ? `\n... and ${entries.length - 5} more` : ''}`)) {
       return;
     }
 
@@ -884,8 +887,27 @@ function copyInv(invNo, btn) {
       const data = await res.json();
       
       if (data.ok) {
+        // Save Odoo references to state and Firebase
+        const newRefs = { ...odooRefs };
+        const createdList = data.results?.filter(r => r.status === 'created') || [];
+        createdList.forEach(r => {
+          if (r.invoiceNo && (r.odooRef || r.moveId)) {
+            newRefs[r.invoiceNo.toUpperCase()] = {
+              odooRef: r.odooRef || null,
+              moveId: r.moveId,
+              posted: r.posted || false,
+              createdAt: new Date().toISOString(),
+              tan: tan,
+              company: data.company || ''
+            };
+          }
+        });
+        setOdooRefs(newRefs);
+        saveToStore('odooRefs', newRefs); // Persist to Firebase
+        
+        const createdRefs = createdList.map(r => `• ${r.invoiceNo} → ${r.odooRef || r.moveId}`).join('\n') || '';
         const failedDetails = data.results?.filter(r => r.status === 'error').map(r => `• ${r.invoiceNo}: ${r.error}`).join('\n') || '';
-        alert(`✅ Success!${data.company ? ` (Company: ${data.company})` : ''}\n\nCreated: ${data.created} entries\nFailed: ${data.failed} entries${data.failed > 0 ? `\n\nErrors:\n${failedDetails}` : ''}`);
+        alert(`✅ Success!${data.company ? ` (Company: ${data.company})` : ''}\n\nCreated: ${data.created} entries\n${createdRefs ? `\nOdoo References:\n${createdRefs}` : ''}${data.failed > 0 ? `\n\nFailed: ${data.failed} entries\n${failedDetails}` : ''}`);
       } else {
         alert(`❌ Error: ${data.error}`);
       }
@@ -1379,6 +1401,9 @@ export default function App() {
   const [isDragging, setIsDragging] = useState(false);
   const [selDS, setSelDS] = useState("26AS");
   const [searchQ, setSearchQ] = useState("");
+  const [invStatusFilter, setInvStatusFilter] = useState("all"); // all, ok, excess, notds
+  const [invTdsDetailPopup, setInvTdsDetailPopup] = useState(null); // { invoiceNo, entries, total }
+  const [odooRefs, setOdooRefs] = useState({}); // { [invoiceNo]: { odooRef, moveId, createdAt } }
   const [sortCol, setSortCol] = useState("id");
   const [sortDir, setSortDir] = useState("asc");
   const [selRows, setSelRows] = useState(new Set());
@@ -2384,6 +2409,9 @@ export default function App() {
         if (savedDriveIndex?.length) { setDriveBackupIndex(savedDriveIndex); driveBackupIndexRef.current = savedDriveIndex; }
         const savedDriveFolderId = await loadFromStore('driveFolderId');
         if (savedDriveFolderId) { setDriveFolderId(savedDriveFolderId); driveFolderIdRef.current = savedDriveFolderId; }
+        // Load Odoo references
+        const savedOdooRefs = await loadFromStore('odooRefs');
+        if (savedOdooRefs) setOdooRefs(savedOdooRefs);
       } catch (e) { console.warn('Failed to load saved data:', e); }
       initialLoadDone.current = true;
       setLoadDone(true);
@@ -5089,20 +5117,45 @@ export default function App() {
                     <div className="emp"><Ic d={I.file} s={44} c="#d1d1d1" sw={1}/><p>No Invoice data loaded</p><p className="sub">Sync invoices from Odoo</p><button className="ib" style={{marginTop:8}} onClick={()=>setView("import")}>Go to Import</button></div>
                   ):(
                     <>
+                      <div style={{display:"flex",gap:8,marginBottom:8,alignItems:"center"}}>
+                        <input type="text" placeholder="Search by client name or invoice no..." value={searchQ} onChange={e=>setSearchQ(e.target.value)} style={{flex:1,padding:"6px 10px",border:"1px solid #ddd",borderRadius:4,fontSize:12}}/>
+                        <select value={invStatusFilter} onChange={e=>setInvStatusFilter(e.target.value)} style={{padding:"6px 10px",border:"1px solid #ddd",borderRadius:4,fontSize:12,background:"#fff",cursor:"pointer"}}>
+                          <option value="all">All Status</option>
+                          <option value="ok">✓ OK</option>
+                          <option value="excess">⚠ Excess TDS</option>
+                          <option value="notds">○ No TDS</option>
+                        </select>
+                      </div>
                       <div className="gw">
                         <table className="dg">
                           <thead><tr>
                             <th style={{width:50}}>S.No.</th>
-                            <th style={{width:200}}>Name of Client</th>
-                            <th style={{width:130}}>Invoice No.</th>
-                            <th style={{width:95}}>Invoice Date</th>
-                            <th style={{width:120,textAlign:"right"}}>Taxable Value</th>
-                            <th style={{width:110,textAlign:"right"}}>Booked TDS</th>
-                            <th style={{width:75,textAlign:"right"}}>Tax Rate</th>
-                            <th style={{width:70}}>Status</th>
+                            <th style={{width:180}}>Name of Client</th>
+                            <th style={{width:120}}>Invoice No.</th>
+                            <th style={{width:85}}>Invoice Date</th>
+                            <th style={{width:110,textAlign:"right"}}>Taxable Value</th>
+                            <th style={{width:100,textAlign:"right"}}>Booked TDS</th>
+                            <th style={{width:65,textAlign:"right"}}>Rate</th>
+                            <th style={{width:60}}>Status</th>
+                            <th style={{width:110}}>Odoo Ref</th>
                           </tr></thead>
                           <tbody>
-                            {(datasets["Invoices"]||[]).filter(inv=>!searchQ||(inv.partnerName||'').toLowerCase().includes(searchQ.toLowerCase())||(inv.invoiceNo||'').toLowerCase().includes(searchQ.toLowerCase())).map((inv,idx)=>{
+                            {(datasets["Invoices"]||[]).filter(inv=>{
+                              // Text search
+                              const matchSearch = !searchQ||(inv.partnerName||'').toLowerCase().includes(searchQ.toLowerCase())||(inv.invoiceNo||'').toLowerCase().includes(searchQ.toLowerCase());
+                              if (!matchSearch) return false;
+                              // Status filter
+                              if (invStatusFilter === "all") return true;
+                              const invNo=(inv.invoiceNo||'').trim().toUpperCase();
+                              const tdsBooked=(datasets["Books"]||[]).filter(b=>(b.invoiceNo||'').trim().toUpperCase()===invNo).reduce((s,b)=>s+(b.tdsDeducted||0),0);
+                              const taxableVal=inv.amountUntaxed||0;
+                              const isExcess=tdsBooked>taxableVal*0.105;
+                              const hasNoTds=tdsBooked===0;
+                              if (invStatusFilter === "excess") return isExcess;
+                              if (invStatusFilter === "notds") return hasNoTds;
+                              if (invStatusFilter === "ok") return !isExcess && !hasNoTds;
+                              return true;
+                            }).map((inv,idx)=>{
                               const invNo=(inv.invoiceNo||'').trim().toUpperCase();
                               const booksEntries=(datasets["Books"]||[]).filter(b=>(b.invoiceNo||'').trim().toUpperCase()===invNo);
                               const tdsBooked=booksEntries.reduce((s,b)=>s+(b.tdsDeducted||0),0);
@@ -5110,16 +5163,21 @@ export default function App() {
                               const tdsPercent=taxableVal>0?((tdsBooked/taxableVal)*100):0;
                               const isExcess=tdsBooked>taxableVal*0.105;
                               const hasNoTds=tdsBooked===0;
+                              const odooRefData = odooRefs[invNo] || null;
                               return(
                                 <tr key={inv.id||idx} style={{background:isExcess?"#fff8f8":hasNoTds?"#fffaf0":idx%2===0?"#fff":"#fafafa"}}>
                                   <td style={{color:"#aaa"}}>{idx+1}</td>
-                                  <td title={inv.partnerName} style={{fontWeight:500,maxWidth:200,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{inv.partnerName||"—"}</td>
+                                  <td title={inv.partnerName} style={{fontWeight:500,maxWidth:180,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{inv.partnerName||"—"}</td>
                                   <td><span style={{fontFamily:"Consolas,monospace",color:"var(--a)",fontSize:11,fontWeight:600}}>{inv.invoiceNo||"—"}</span></td>
                                   <td style={{fontFamily:"Consolas,monospace",fontSize:11}}>{inv.invoiceDate||"—"}</td>
                                   <td className="num" style={{fontWeight:600,color:"#107c10"}}>₹{taxableVal.toLocaleString("en-IN",{minimumFractionDigits:2})}</td>
-                                  <td className="num" style={{fontWeight:600,color:isExcess?"#a80000":hasNoTds?"#d59300":"#0078d4"}}>{tdsBooked>0?`₹${tdsBooked.toLocaleString("en-IN",{minimumFractionDigits:2})}`:"—"}</td>
-                                  <td className="num" style={{fontWeight:600,color:isExcess?"#a80000":"#5c2d91"}}>{tdsBooked>0?`${tdsPercent.toFixed(2)}%`:"—"}{isExcess&&<span style={{marginLeft:2}}>⚠</span>}</td>
+                                  <td className="num" style={{fontWeight:600,color:isExcess?"#a80000":hasNoTds?"#d59300":"#0078d4",cursor:tdsBooked>0?"pointer":"default",textDecoration:tdsBooked>0?"underline":"none"}} onClick={()=>{ if(tdsBooked>0) setInvTdsDetailPopup({ invoiceNo: inv.invoiceNo, entries: booksEntries, total: tdsBooked, taxableVal, tdsPercent, isExcess }); }} title={tdsBooked>0?`Click to see ${booksEntries.length} TDS entries`:""}>
+                                    {tdsBooked>0?`₹${tdsBooked.toLocaleString("en-IN",{minimumFractionDigits:2})}`:"—"}
+                                    {booksEntries.length>1&&<sup style={{fontSize:8,marginLeft:2,color:"#666"}}>{booksEntries.length}</sup>}
+                                  </td>
+                                  <td className="num" style={{fontWeight:600,color:isExcess?"#a80000":"#5c2d91"}}>{tdsBooked>0?`${tdsPercent.toFixed(1)}%`:"—"}{isExcess&&<span style={{marginLeft:2}}>⚠</span>}</td>
                                   <td><span style={{display:"inline-block",padding:"2px 6px",borderRadius:10,fontSize:9,fontWeight:600,background:hasNoTds?"#fff4e0":isExcess?"#fde7e9":"#e8f8e8",color:hasNoTds?"#996600":isExcess?"#a80000":"#107c10"}}>{hasNoTds?"No TDS":isExcess?"Excess":"OK"}</span></td>
+                                  <td style={{fontSize:10,fontFamily:"Consolas,monospace"}}>{odooRefData ? <span style={{color:"#5c2d91",fontWeight:600}} title={`Created: ${odooRefData.createdAt?.slice(0,10)||'?'}`}>{odooRefData.odooRef || `ID:${odooRefData.moveId}`}</span> : <span style={{color:"#ccc"}}>—</span>}</td>
                                 </tr>
                               );
                             })}
@@ -5347,6 +5405,80 @@ export default function App() {
 
             {detailTAN&&(
               <TanDetailModal tan={detailTAN} tanRow={liveResults.find(r=>r.tan===detailTAN)} txns26AS={datasets["26AS"]} txnsBooks={datasets["Books"]} txnsInvoices={datasets["Invoices"]||[]} onClose={()=>setDetailTAN(null)} fmt={fmt} FmtDiff={FmtDiff} odooUrl={curCompany.odooUrl || companies.find(c=>c.odooEnabled&&c.odooUrl)?.odooUrl || ''} odooConfig={curCompany.odooEnabled ? {url:curCompany.odooUrl,database:curCompany.odooDatabase,username:curCompany.odooUsername,password:curCompany.odooPassword} : (()=>{const oc=companies.find(c=>c.odooEnabled&&c.odooUrl);return oc?{url:oc.odooUrl,database:oc.odooDatabase,username:oc.odooUsername,password:oc.odooPassword}:null;})() } tanMaster={tanMaster}/>
+            )}
+
+            {/* TDS Details Popup for Invoices Tab */}
+            {invTdsDetailPopup && (
+              <div style={{position:"fixed",top:0,left:0,right:0,bottom:0,background:"rgba(0,0,0,0.5)",zIndex:9999,display:"flex",alignItems:"center",justifyContent:"center"}} onClick={()=>setInvTdsDetailPopup(null)}>
+                <div style={{background:"#fff",borderRadius:10,width:650,maxHeight:"80vh",overflow:"hidden",boxShadow:"0 8px 32px rgba(0,0,0,0.25)"}} onClick={e=>e.stopPropagation()}>
+                  <div style={{background:"linear-gradient(135deg,#0078d4,#5c2d91)",padding:"16px 20px",color:"#fff"}}>
+                    <div style={{fontSize:11,textTransform:"uppercase",letterSpacing:1,opacity:0.8,marginBottom:4}}>TDS Booking Details</div>
+                    <div style={{fontSize:16,fontWeight:700,fontFamily:"Consolas,monospace"}}>{invTdsDetailPopup.invoiceNo}</div>
+                  </div>
+                  <div style={{padding:"16px 20px"}}>
+                    <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12,marginBottom:16}}>
+                      <div style={{background:"#f0fff0",padding:"10px",borderRadius:6,border:"1px solid #c0e0c0"}}>
+                        <div style={{fontSize:10,color:"#666",textTransform:"uppercase",marginBottom:3}}>Taxable Value</div>
+                        <div style={{fontSize:15,fontWeight:700,color:"#107c10",fontFamily:"Consolas,monospace"}}>₹{(invTdsDetailPopup.taxableVal||0).toLocaleString("en-IN",{minimumFractionDigits:2})}</div>
+                      </div>
+                      <div style={{background:"#f0f8ff",padding:"10px",borderRadius:6,border:"1px solid #c0d8f0"}}>
+                        <div style={{fontSize:10,color:"#666",textTransform:"uppercase",marginBottom:3}}>TDS Booked</div>
+                        <div style={{fontSize:15,fontWeight:700,color:"#0078d4",fontFamily:"Consolas,monospace"}}>₹{(invTdsDetailPopup.total||0).toLocaleString("en-IN",{minimumFractionDigits:2})}</div>
+                      </div>
+                      <div style={{background:invTdsDetailPopup.isExcess?"#fff0f0":"#f8f0ff",padding:"10px",borderRadius:6,border:`1px solid ${invTdsDetailPopup.isExcess?"#f0c0c0":"#d8c0f0"}`}}>
+                        <div style={{fontSize:10,color:"#666",textTransform:"uppercase",marginBottom:3}}>Tax Rate</div>
+                        <div style={{fontSize:15,fontWeight:700,color:invTdsDetailPopup.isExcess?"#a80000":"#5c2d91",fontFamily:"Consolas,monospace"}}>{invTdsDetailPopup.tdsPercent?.toFixed(2)||0}%{invTdsDetailPopup.isExcess&&<span style={{fontSize:11,marginLeft:4}}>⚠</span>}</div>
+                      </div>
+                    </div>
+                    {(()=>{const odooRefData = odooRefs[(invTdsDetailPopup.invoiceNo||'').toUpperCase()]; return odooRefData ? (
+                      <div style={{background:"#f8f0ff",border:"1px solid #d8c0f0",borderRadius:6,padding:"10px 14px",marginBottom:16,display:"flex",alignItems:"center",gap:10}}>
+                        <span style={{fontSize:11,color:"#666"}}>Odoo Reference:</span>
+                        <span style={{fontFamily:"Consolas,monospace",fontWeight:700,color:"#5c2d91",fontSize:13}}>{odooRefData.odooRef || `ID:${odooRefData.moveId}`}</span>
+                        <span style={{fontSize:10,color:"#999",marginLeft:"auto"}}>Created: {odooRefData.createdAt?.slice(0,10)||'?'}</span>
+                      </div>
+                    ) : null;})()}
+                    <div style={{fontSize:12,fontWeight:600,color:"#333",marginBottom:8}}>📘 Books Entries ({invTdsDetailPopup.entries?.length||0})</div>
+                    {(!invTdsDetailPopup.entries||invTdsDetailPopup.entries.length===0)?(
+                      <div style={{padding:"20px",textAlign:"center",color:"#999",fontSize:12,background:"#f8f8f8",borderRadius:6}}>No TDS entries found</div>
+                    ):(
+                      <div style={{maxHeight:280,overflow:"auto",border:"1px solid #e0e0e0",borderRadius:6}}>
+                        <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
+                          <thead><tr style={{background:"#f5f5f5"}}>
+                            <th style={{padding:"8px",textAlign:"left",borderBottom:"1px solid #e0e0e0"}}>S.No.</th>
+                            <th style={{padding:"8px",textAlign:"left",borderBottom:"1px solid #e0e0e0"}}>Date</th>
+                            <th style={{padding:"8px",textAlign:"left",borderBottom:"1px solid #e0e0e0"}}>Quarter</th>
+                            <th style={{padding:"8px",textAlign:"left",borderBottom:"1px solid #e0e0e0"}}>Section</th>
+                            <th style={{padding:"8px",textAlign:"left",borderBottom:"1px solid #e0e0e0"}}>Deductor</th>
+                            <th style={{padding:"8px",textAlign:"right",borderBottom:"1px solid #e0e0e0"}}>TDS Amount</th>
+                            <th style={{padding:"8px",textAlign:"right",borderBottom:"1px solid #e0e0e0"}}>Rate %</th>
+                          </tr></thead>
+                          <tbody>
+                            {invTdsDetailPopup.entries.map((row,idx)=>{const rate=invTdsDetailPopup.taxableVal>0?((row.tdsDeducted||0)/invTdsDetailPopup.taxableVal*100).toFixed(2):"—";return(
+                              <tr key={idx} style={{background:idx%2===0?"#fff":"#fafafa"}}>
+                                <td style={{padding:"8px",color:"#aaa"}}>{idx+1}</td>
+                                <td style={{padding:"8px",fontFamily:"Consolas,monospace"}}>{row.date||row.invoiceDate||"—"}</td>
+                                <td style={{padding:"8px"}}>{row.quarter||"—"}</td>
+                                <td style={{padding:"8px"}}>{row.section||"—"}</td>
+                                <td style={{padding:"8px",maxWidth:150,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={row.deductorName}>{row.deductorName||"—"}</td>
+                                <td style={{padding:"8px",textAlign:"right",fontFamily:"Consolas,monospace",fontWeight:600,color:"#0078d4"}}>₹{(row.tdsDeducted||0).toLocaleString("en-IN",{minimumFractionDigits:2})}</td>
+                                <td style={{padding:"8px",textAlign:"right",fontFamily:"Consolas,monospace",color:"#5c2d91"}}>{rate}%</td>
+                              </tr>
+                            );})}
+                          </tbody>
+                          <tfoot><tr style={{background:"#e6f3fb"}}>
+                            <td colSpan={5} style={{padding:"8px",fontWeight:700,color:"#0078d4"}}>Total</td>
+                            <td style={{padding:"8px",textAlign:"right",fontFamily:"Consolas,monospace",fontWeight:700,color:"#0078d4"}}>₹{(invTdsDetailPopup.total||0).toLocaleString("en-IN",{minimumFractionDigits:2})}</td>
+                            <td style={{padding:"8px",textAlign:"right",fontFamily:"Consolas,monospace",fontWeight:600,color:"#5c2d91"}}>{invTdsDetailPopup.tdsPercent?.toFixed(2)||0}%</td>
+                          </tr></tfoot>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                  <div style={{padding:"12px 20px",borderTop:"1px solid #eee",display:"flex",justifyContent:"flex-end"}}>
+                    <button onClick={()=>setInvTdsDetailPopup(null)} style={{padding:"8px 20px",background:"#0078d4",color:"#fff",border:"none",borderRadius:4,cursor:"pointer",fontWeight:600,fontSize:12}}>Close</button>
+                  </div>
+                </div>
+              </div>
             )}
 
             {view==="tanmaster"&&(
