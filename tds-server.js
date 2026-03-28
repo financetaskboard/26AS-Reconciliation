@@ -392,22 +392,35 @@ app.post('/api/odoo/sync-tds', async (req, res) => {
 
     const moveIds = [...new Set(filtered.map(l => l.move_id?.[0]).filter(Boolean))];
     const invoiceAmounts = {};
+    const invoiceDates = {}; // Store invoice dates
+    
     for (let i = 0; i < moveIds.length; i += BATCH) {
       const ids = moveIds.slice(i, i + BATCH);
+      // Get invoice amounts
       const dl = await odooCall(session, 'account.move.line', 'search_read',
         [[['move_id','in',ids],['account_id','=',debtorAccId]]],
         { fields: ['move_id','credit'] });
       dl.forEach(d => { const m = d.move_id?.[0]; if(m) invoiceAmounts[m] = (invoiceAmounts[m]||0) + (d.credit||0); });
+      
+      // Get invoice dates from account.move
+      const moves = await odooCall(session, 'account.move', 'search_read',
+        [[['id','in',ids]]],
+        { fields: ['id','invoice_date','date'] });
+      moves.forEach(m => { invoiceDates[m.id] = m.invoice_date || m.date || ''; });
     }
 
     const getQ = d => { if(!d) return 'Q1'; const m=new Date(d).getMonth()+1; if(m>=4&&m<=6)return'Q1';if(m>=7&&m<=9)return'Q2';if(m>=10&&m<=12)return'Q3';return'Q4'; };
-    const data = filtered.map(l => ({
-      deductorName: l.partner_id?.[1]||'', tan: '',
-      amount: invoiceAmounts[l.move_id?.[0]]||0, tdsDeducted: l.debit||0,
-      section: '', date: l.date||'', invoiceNo: l.name||'',
-      quarter: getQ(l.date), source: 'Odoo ERP',
-      journalEntry: l.move_id?.[1]||'', odooCompany: l.company_id?.[1]||''
-    }));
+    const data = filtered.map(l => {
+      const moveId = l.move_id?.[0];
+      const invDate = invoiceDates[moveId] || '';
+      return {
+        deductorName: l.partner_id?.[1]||'', tan: '',
+        amount: invoiceAmounts[moveId]||0, tdsDeducted: l.debit||0,
+        section: '', date: l.date||'', invoiceDate: invDate, invoiceNo: l.name||'',
+        quarter: getQ(invDate || l.date), source: 'Odoo ERP',
+        journalEntry: l.move_id?.[1]||'', odooCompany: l.company_id?.[1]||''
+      };
+    });
     console.log(`✅ TDS Sync: ${data.length} records via ${session.mode}`);
     res.json({ ok: true, count: data.length, total: allLines.length, data });
   } catch (e) {
@@ -454,6 +467,7 @@ app.post('/api/odoo/sync-invoices', async (req, res) => {
       invoiceNo: inv.name || '',
       invoiceDate: inv.invoice_date || '',
       partnerName: inv.partner_id?.[1] || '',
+      partnerId: inv.partner_id?.[0] || null,  // Store Odoo partner ID
       amountUntaxed: inv.amount_untaxed || 0,
       amountTotal: inv.amount_total || 0,
       odooId: inv.id
@@ -545,11 +559,28 @@ app.post('/api/odoo/create-journal-entries', async (req, res) => {
     
     for (const entry of entries) {
       try {
-        // Find partner by TAN or name
+        console.log(`   Processing entry: invoiceNo=${entry.invoiceNo}, tan=${entry.tan}, partnerName=${entry.partnerName}, odooPartnerId=${entry.odooPartnerId}`);
+        
+        // Find partner by direct ID, TAN, or name
         let partnerId = null;
         
+        // 0. Use direct Odoo Partner ID if provided (from invoice data)
+        if (entry.odooPartnerId) {
+          // Verify the partner ID exists
+          const partnerCheck = await odooCall(session, 'res.partner', 'search_read', 
+            [[['id', '=', entry.odooPartnerId]]], 
+            { fields: ['id', 'name'], limit: 1 }
+          );
+          if (partnerCheck.length) {
+            partnerId = entry.odooPartnerId;
+            console.log(`   ✅ Using direct partner ID: ${partnerId} (${partnerCheck[0].name})`);
+          } else {
+            console.log(`   ⚠ Direct partner ID ${entry.odooPartnerId} not found in Odoo`);
+          }
+        }
+        
         // 1. Try by TAN (stored in VAT or ref field)
-        if (entry.tan) {
+        if (!partnerId && entry.tan) {
           const partnerByTan = await odooCall(session, 'res.partner', 'search_read', 
             [[['vat', 'ilike', entry.tan]]], 
             { fields: ['id', 'name'], limit: 1 }
@@ -562,13 +593,15 @@ app.post('/api/odoo/create-journal-entries', async (req, res) => {
         
         // 2. Try by partner name (deductor name)
         if (!partnerId && entry.partnerName) {
+          console.log(`   Searching partner by name: "${entry.partnerName}"`);
+          // Try exact ilike match in Ginesys company first
           const partnerByName = await odooCall(session, 'res.partner', 'search_read', 
             [[['name', 'ilike', entry.partnerName], ['company_id', '=', companyId]]], 
             { fields: ['id', 'name'], limit: 1 }
           );
           if (partnerByName.length) {
             partnerId = partnerByName[0].id;
-            console.log(`   Found partner by name: ${partnerByName[0].name}`);
+            console.log(`   ✅ Found partner by name (Ginesys): ${partnerByName[0].name}`);
           } else {
             // Try without company filter
             const partnerAny = await odooCall(session, 'res.partner', 'search_read', 
@@ -577,7 +610,18 @@ app.post('/api/odoo/create-journal-entries', async (req, res) => {
             );
             if (partnerAny.length) {
               partnerId = partnerAny[0].id;
-              console.log(`   Found partner (any company): ${partnerAny[0].name}`);
+              console.log(`   ✅ Found partner (any company): ${partnerAny[0].name}`);
+            } else {
+              // Try partial match - first 20 characters
+              const partialName = entry.partnerName.substring(0, 20);
+              const partnerPartial = await odooCall(session, 'res.partner', 'search_read', 
+                [[['name', 'ilike', partialName]]], 
+                { fields: ['id', 'name'], limit: 5 }
+              );
+              if (partnerPartial.length) {
+                partnerId = partnerPartial[0].id;
+                console.log(`   ✅ Found partner by partial match: ${partnerPartial[0].name} (searched: "${partialName}")`);
+              }
             }
           }
         }
