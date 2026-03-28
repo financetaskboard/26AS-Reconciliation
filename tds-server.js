@@ -650,7 +650,6 @@ app.post('/api/odoo/create-journal-entries', async (req, res) => {
         results.push({ invoiceNo: entry.invoiceNo, status: 'error', error: entryErr.message });
         console.log(`   ❌ Failed for ${entry.invoiceNo}: ${entryErr.message}`);
       }
-      }
     }
     
     const created = results.filter(r => r.status === 'created').length;
