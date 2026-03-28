@@ -545,24 +545,61 @@ app.post('/api/odoo/create-journal-entries', async (req, res) => {
     
     for (const entry of entries) {
       try {
-        // Find partner by external ID or name
+        // Find partner by TAN or name
         let partnerId = null;
-        if (entry.partnerExternalId) {
-          const partnerIds = await odooCall(session, 'ir.model.data', 'search_read', 
+        
+        // 1. Try by TAN (stored in VAT or ref field)
+        if (entry.tan) {
+          const partnerByTan = await odooCall(session, 'res.partner', 'search_read', 
+            [[['vat', 'ilike', entry.tan]]], 
+            { fields: ['id', 'name'], limit: 1 }
+          );
+          if (partnerByTan.length) {
+            partnerId = partnerByTan[0].id;
+            console.log(`   Found partner by TAN: ${partnerByTan[0].name}`);
+          }
+        }
+        
+        // 2. Try by partner name (deductor name)
+        if (!partnerId && entry.partnerName) {
+          const partnerByName = await odooCall(session, 'res.partner', 'search_read', 
+            [[['name', 'ilike', entry.partnerName], ['company_id', '=', companyId]]], 
+            { fields: ['id', 'name'], limit: 1 }
+          );
+          if (partnerByName.length) {
+            partnerId = partnerByName[0].id;
+            console.log(`   Found partner by name: ${partnerByName[0].name}`);
+          } else {
+            // Try without company filter
+            const partnerAny = await odooCall(session, 'res.partner', 'search_read', 
+              [[['name', 'ilike', entry.partnerName]]], 
+              { fields: ['id', 'name'], limit: 1 }
+            );
+            if (partnerAny.length) {
+              partnerId = partnerAny[0].id;
+              console.log(`   Found partner (any company): ${partnerAny[0].name}`);
+            }
+          }
+        }
+        
+        // 3. Try by external ID
+        if (!partnerId && entry.partnerExternalId) {
+          const partnerByExtId = await odooCall(session, 'ir.model.data', 'search_read', 
             [[['name', '=', entry.partnerExternalId], ['model', '=', 'res.partner']]], 
             { fields: ['res_id'], limit: 1 }
           );
-          if (partnerIds.length) partnerId = partnerIds[0].res_id;
+          if (partnerByExtId.length) partnerId = partnerByExtId[0].res_id;
         }
-        if (!partnerId && entry.partnerName) {
-          const partnerIds = await odooCall(session, 'res.partner', 'search', [[['name', 'ilike', entry.partnerName]]], { limit: 1 });
-          if (partnerIds.length) partnerId = partnerIds[0];
+        
+        if (!partnerId) {
+          console.log(`   ⚠ Partner not found for TAN=${entry.tan}, Name=${entry.partnerName}`);
         }
         
         // Create journal entry with correct company_id
         const moveVals = {
           company_id: companyId,
           journal_id: journalId,
+          partner_id: partnerId,  // Also set at move level
           date: entry.date,
           ref: entry.invoiceNo || `TDS Entry - ${entry.date}`,
           move_type: 'entry',
@@ -572,36 +609,47 @@ app.post('/api/odoo/create-journal-entries', async (req, res) => {
               partner_id: partnerId,
               name: entry.invoiceNo || 'TDS Receivable',
               debit: entry.amount,
-              credit: 0,
-              company_id: companyId
+              credit: 0
             }],
             [0, 0, {
               account_id: debtorAccount.id,
               partner_id: partnerId,
               name: entry.invoiceNo || 'TDS Receivable',
               debit: 0,
-              credit: entry.amount,
-              company_id: companyId
+              credit: entry.amount
             }]
           ]
         };
         
-        console.log(`   Creating entry for ${entry.invoiceNo} in ${companyName}...`);
+        console.log(`   Creating entry for ${entry.invoiceNo} (Partner ID: ${partnerId || 'None'})...`);
         const moveId = await odooCall(session, 'account.move', 'create', [moveVals]);
         
+        // Get the Odoo reference number (entry name like TDS/2024/2930)
+        let odooRef = null;
+        try {
+          const moveData = await odooCall(session, 'account.move', 'read', [[moveId]], { fields: ['name', 'state'] });
+          if (moveData.length) odooRef = moveData[0].name;
+        } catch (e) { /* ignore */ }
+        
         // Try to post the entry
+        let posted = false;
         try {
           await odooCall(session, 'account.move', 'action_post', [[moveId]]);
-          console.log(`   ✅ Created & posted: ${moveId}`);
+          posted = true;
+          // Re-fetch name after posting (it might get sequence number after posting)
+          const moveData = await odooCall(session, 'account.move', 'read', [[moveId]], { fields: ['name'] });
+          if (moveData.length) odooRef = moveData[0].name;
+          console.log(`   ✅ Created & posted: ${odooRef} (ID: ${moveId})`);
         } catch (postErr) {
-          console.log(`   ⚠ Created ${moveId} but could not post: ${postErr.message}`);
+          console.log(`   ⚠ Created ${odooRef || moveId} but could not post: ${postErr.message}`);
         }
         
-        results.push({ invoiceNo: entry.invoiceNo, moveId, status: 'created' });
+        results.push({ invoiceNo: entry.invoiceNo, moveId, odooRef, posted, status: 'created' });
         
       } catch (entryErr) {
         results.push({ invoiceNo: entry.invoiceNo, status: 'error', error: entryErr.message });
         console.log(`   ❌ Failed for ${entry.invoiceNo}: ${entryErr.message}`);
+      }
       }
     }
     
