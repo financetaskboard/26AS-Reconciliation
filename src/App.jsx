@@ -515,7 +515,11 @@ const css = `
 `;
 
 // ── TAN DETAIL MODAL ──────────────────────────────────────────────────────────
+<<<<<<< HEAD
 function TanDetailModal({ tan, tanRow, txns26AS, txnsBooks, txnsInvoices, onClose, fmt, FmtDiff, odooUrl, odooConfig, tanMaster }) {
+=======
+function TanDetailModal({ tan, tanRow, txns26AS, txnsBooks, txnsInvoices, onClose, fmt, FmtDiff, odooUrl, odooConfig, tanMaster, odooRefs, setOdooRefs }) {
+>>>>>>> f4ab98b (Fix odooRefs, TDS popup, Odoo tracking)
   const as = txns26AS.filter(r => r.tan?.toUpperCase().trim() === tan);
 
   // Expand Books rows — Odoo may store combined invoice refs joined by '.'
@@ -5404,7 +5408,11 @@ export default function App() {
             )}
 
             {detailTAN&&(
+<<<<<<< HEAD
               <TanDetailModal tan={detailTAN} tanRow={liveResults.find(r=>r.tan===detailTAN)} txns26AS={datasets["26AS"]} txnsBooks={datasets["Books"]} txnsInvoices={datasets["Invoices"]||[]} onClose={()=>setDetailTAN(null)} fmt={fmt} FmtDiff={FmtDiff} odooUrl={curCompany.odooUrl || companies.find(c=>c.odooEnabled&&c.odooUrl)?.odooUrl || ''} odooConfig={curCompany.odooEnabled ? {url:curCompany.odooUrl,database:curCompany.odooDatabase,username:curCompany.odooUsername,password:curCompany.odooPassword} : (()=>{const oc=companies.find(c=>c.odooEnabled&&c.odooUrl);return oc?{url:oc.odooUrl,database:oc.odooDatabase,username:oc.odooUsername,password:oc.odooPassword}:null;})() } tanMaster={tanMaster}/>
+=======
+              <TanDetailModal tan={detailTAN} tanRow={liveResults.find(r=>r.tan===detailTAN)} txns26AS={datasets["26AS"]} txnsBooks={datasets["Books"]} txnsInvoices={datasets["Invoices"]||[]} onClose={()=>setDetailTAN(null)} fmt={fmt} FmtDiff={FmtDiff} odooUrl={curCompany.odooUrl || companies.find(c=>c.odooEnabled&&c.odooUrl)?.odooUrl || ''} odooConfig={curCompany.odooEnabled ? {url:curCompany.odooUrl,database:curCompany.odooDatabase,username:curCompany.odooUsername,password:curCompany.odooPassword} : (()=>{const oc=companies.find(c=>c.odooEnabled&&c.odooUrl);return oc?{url:oc.odooUrl,database:oc.odooDatabase,username:oc.odooUsername,password:oc.odooPassword}:null;})() } tanMaster={tanMaster} odooRefs={odooRefs} setOdooRefs={setOdooRefs}/>
+>>>>>>> f4ab98b (Fix odooRefs, TDS popup, Odoo tracking)
             )}
 
             {/* TDS Details Popup for Invoices Tab */}
