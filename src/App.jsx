@@ -591,9 +591,11 @@ function TanDetailModal({ tan, tanRow, txns26AS, txnsBooks, txnsInvoices, onClos
       const bkDate = b.invoiceDate || b.date || '';
       // Pass 1: same TDS + same month
       let match = as.find(a => !usedAs.has(a.id) && amtMatch(a,b) && isMonthOffset(bkDate, a.date, 0));
-      // Pass 2: same TDS + next month
+      // Pass 2: same TDS + 1 month after
       if (!match) match = as.find(a => !usedAs.has(a.id) && amtMatch(a,b) && isMonthOffset(bkDate, a.date, 1));
-      // Pass 3: same TDS any date
+      // Pass 3: same TDS + 2 months after
+      if (!match) match = as.find(a => !usedAs.has(a.id) && amtMatch(a,b) && isMonthOffset(bkDate, a.date, 2));
+      // Pass 4: same TDS any date (fallback)
       if (!match) match = as.find(a => !usedAs.has(a.id) && amtMatch(a,b));
       if (match) { newGroups.push({ groupNo: groupNo++, asIds: new Set([match.id]), bkIds: new Set([b.id]) }); usedBk.add(b.id); usedAs.add(match.id); }
     });
@@ -827,11 +829,12 @@ function copyInv(invNo, btn) {
     // Find Odoo credentials from tanMaster or use default
     const master = tanMaster || [];
     const partnerIdMap = {};
-    master.forEach(r => { if (r.tan && r.odooPartnerId) partnerIdMap[r.tan] = r.odooPartnerId; });
-    const partnerExtId = partnerIdMap[tan] || '';
+    master.forEach(r => { if (r.tan && r.odooPartnerId) partnerIdMap[r.tan] = Number(r.odooPartnerId); });
+    const tanMasterPartnerId = partnerIdMap[tan] || null;
+    console.log(`[pushToOdoo] TAN Master partnerId for ${tan}:`, tanMasterPartnerId);
     
     // Get deductor name from tanRow (the TAN detail)
-    const deductorName = tanRow?.name || tanRow?.deductorName || '';
+    const deductorName = tanRow?.name || tanRow?.deductorName || tanRow?.bk_name || tanRow?.as_name || '';
     
     // Use odooConfig prop or fallback to window.__odooConfig
     const config = odooConfig || window.__odooConfig;
@@ -842,7 +845,7 @@ function copyInv(invNo, btn) {
 
     const today = new Date().toISOString().slice(0, 10);
     
-    // Build entries array with partner info
+    // Build entries array with partner info from invoice data
     const entries = [];
     unbooked.forEach((r) => {
       const tdsAmt = r.tdsDeposited || r.tdsDeducted || 0;
@@ -850,18 +853,42 @@ function copyInv(invNo, btn) {
       const invNos = invoiceNoStr.split(',').map(s => s.trim()).filter(Boolean);
       
       if (invNos.length <= 1) {
-        entries.push({ invoiceNo: invoiceNoStr, amount: tdsAmt, date: today, partnerExternalId: partnerExtId, partnerName: deductorName, tan });
+        // Get partner from invoice if available
+        const inv = txnsInvoices?.find(i => (i.invoiceNo||'').trim().toUpperCase() === invoiceNoStr.toUpperCase());
+        console.log(`[pushToOdoo] Invoice lookup for ${invoiceNoStr}:`, inv ? { partnerName: inv.partnerName, partnerId: inv.partnerId, odooPartnerId: inv.odooPartnerId } : 'NOT FOUND');
+        const partnerFromInv = inv?.partnerName || '';
+        const odooPartnerIdFromInv = inv?.odooPartnerId || inv?.partnerId || null;
+        // Priority: 1. TAN Master partnerId, 2. Invoice partnerId, 3. name lookup
+        const finalPartnerId = tanMasterPartnerId || odooPartnerIdFromInv || null;
+        console.log(`[pushToOdoo] Using partner: name="${partnerFromInv || deductorName}", odooPartnerId=${finalPartnerId} (tanMaster: ${tanMasterPartnerId}, inv: ${odooPartnerIdFromInv})`);
+        entries.push({ 
+          invoiceNo: invoiceNoStr, 
+          amount: tdsAmt, 
+          date: today, 
+          partnerName: partnerFromInv || deductorName,
+          odooPartnerId: finalPartnerId,
+          tan 
+        });
       } else {
         // Multiple invoices — split proportionally
         const invAmts = invNos.map(invNo => {
           const inv = txnsInvoices?.find(i => (i.invoiceNo||'').trim().toUpperCase() === invNo.toUpperCase());
-          return { invNo, amt: inv?.amountUntaxed || 0 };
+          return { invNo, amt: inv?.amountUntaxed || 0, partnerName: inv?.partnerName || '', odooPartnerId: inv?.odooPartnerId || inv?.partnerId || null };
         });
         const totalAmt = invAmts.reduce((s, i) => s + i.amt, 0);
         invAmts.forEach((inv) => {
           const proportion = totalAmt > 0 ? inv.amt / totalAmt : 1 / invNos.length;
           const splitTds = Math.round(tdsAmt * proportion * 100) / 100;
-          entries.push({ invoiceNo: inv.invNo, amount: splitTds, date: today, partnerExternalId: partnerExtId, partnerName: deductorName, tan });
+          // Priority: 1. TAN Master partnerId, 2. Invoice partnerId
+          const finalPartnerId = tanMasterPartnerId || inv.odooPartnerId || null;
+          entries.push({ 
+            invoiceNo: inv.invNo, 
+            amount: splitTds, 
+            date: today, 
+            partnerName: inv.partnerName || deductorName,
+            odooPartnerId: finalPartnerId,
+            tan 
+          });
         });
       }
     });
