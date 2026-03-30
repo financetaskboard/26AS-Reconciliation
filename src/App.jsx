@@ -633,6 +633,7 @@ function TanDetailModal({ tan, tanRow, txns26AS, txnsBooks, txnsInvoices, onClos
 
     const totalAmt = unbooked.reduce((s,r)=>s+(r.amountUntaxed||0),0);
     const totalWithTax = unbooked.reduce((s,r)=>s+(r.amountTotal||0),0);
+    const totalDue = unbooked.reduce((s,r)=>s+(r.amountDue||0),0);
     // Total remaining = invoice amounts minus what's already linked
     const totalRemaining = unbooked.reduce((s,inv) => {
       const key = (inv.invoiceNo||'').trim().toUpperCase();
@@ -666,6 +667,7 @@ function TanDetailModal({ tan, tanRow, txns26AS, txnsBooks, txnsInvoices, onClos
         <td style="padding:8px 12px;color:#333">${inv.invoiceDate||'—'}</td>
         <td style="padding:8px 12px;text-align:right;color:#107c10;font-weight:700;font-family:Consolas,monospace">${fmtAmt(inv.amountUntaxed)}</td>
         <td style="padding:8px 12px;text-align:right;color:#555;font-family:Consolas,monospace">${fmtAmt(inv.amountTotal)}</td>
+        <td style="padding:8px 12px;text-align:right;font-family:Consolas,monospace;font-weight:700;color:${(inv.amountDue||0)>0?'#d59300':'#107c10'}">${(inv.amountDue||0)>0?fmtAmt(inv.amountDue):'Paid ✓'}</td>
         <td style="padding:8px 12px;color:#666;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${inv.partnerName||'—'}</td>
       </tr>`;
     }).join('');
@@ -702,6 +704,8 @@ function TanDetailModal({ tan, tanRow, txns26AS, txnsBooks, txnsInvoices, onClos
     <div class="amtsub">excl. tax · total unbooked</div>
     <div class="amt" style="font-size:16px;margin-top:6px;color:${Math.abs(totalRemaining)<1?'#a8e6cf':'#ffe082'}">${fmtAmt(totalRemaining)}</div>
     <div class="amtsub">${Math.abs(totalRemaining)<1?'✓ fully linked — nothing pending':'remaining to link'}</div>
+    <div class="amt" style="font-size:14px;margin-top:8px;color:${totalDue>0?'#ffab40':'#a8e6cf'}">${fmtAmt(totalDue)}</div>
+    <div class="amtsub">${totalDue>0?'outstanding / unpaid':'✓ all paid'}</div>
   </div>
 </div>
 <div class="wrap">
@@ -709,13 +713,14 @@ function TanDetailModal({ tan, tanRow, txns26AS, txnsBooks, txnsInvoices, onClos
 <table>
   <thead><tr>
     <th style="width:36px">#</th><th>Invoice No</th><th>Invoice Date</th>
-    <th class="r">Amount (excl. tax)</th><th class="r">Total Amount</th><th>Party</th>
+    <th class="r">Amount (excl. tax)</th><th class="r">Total Amount</th><th class="r">Amount Due</th><th>Party</th>
   </tr></thead>
   <tbody>${rows}</tbody>
   <tfoot><tr>
     <td colspan="3" style="color:#0078d4">Total (${unbooked.length} invoices)</td>
     <td style="text-align:right;color:#a80000;font-family:Consolas,monospace">${fmtAmt(totalAmt)}</td>
     <td style="text-align:right;color:#555;font-family:Consolas,monospace">${fmtAmt(totalWithTax)}</td>
+    <td style="text-align:right;color:#d59300;font-family:Consolas,monospace;font-weight:700">${fmtAmt(unbooked.reduce((s,r)=>s+(r.amountDue||0),0))}</td>
     <td></td>
   </tr></tfoot>
 </table>
@@ -1121,6 +1126,15 @@ function copyInv(invNo, btn) {
                                       {totalInvAmt > 0 && (
                                         <div style={{marginTop:2,fontSize:9.5,display:"flex",gap:6,flexWrap:"wrap"}}>
                                           <span style={{color:"#107c10",fontFamily:"Consolas,monospace",fontWeight:600}}>Inv: ₹{totalInvAmt.toLocaleString("en-IN",{maximumFractionDigits:0})}</span>
+                                          {(() => {
+                                            const totalDueAmt = linkedInvNos.reduce((sum, invNo) => {
+                                              const inv = txnsInvoices?.find(i => (i.invoiceNo||'').trim().toUpperCase() === invNo.toUpperCase());
+                                              return sum + (inv?.amountDue || 0);
+                                            }, 0);
+                                            return totalDueAmt > 0 
+                                              ? <span style={{color:"#d59300",fontFamily:"Consolas,monospace",fontWeight:600}}>Due: ₹{totalDueAmt.toLocaleString("en-IN",{maximumFractionDigits:0})}</span>
+                                              : <span style={{color:"#107c10",fontFamily:"Consolas,monospace",fontWeight:600}}>Paid ✓</span>;
+                                          })()}
                                           {hasMultiple && <span style={{color:"#5c2d91",fontSize:9}}>({linkedInvNos.length} inv)</span>}
                                           {diff !== null && <span style={{color: Math.abs(diff)<1 ? "#107c10" : diff>0 ? "#0078d4" : "#a80000", fontFamily:"Consolas,monospace", fontWeight:600}}>{Math.abs(diff)<1 ? "✓" : diff>0 ? `+₹${diff.toLocaleString("en-IN",{maximumFractionDigits:0})}` : `-₹${Math.abs(diff).toLocaleString("en-IN",{maximumFractionDigits:0})}`}</span>}
                                         </div>
@@ -1187,7 +1201,7 @@ function copyInv(invNo, btn) {
                 <button onClick={()=>setShowTdsBookingModal(null)} style={{background:"rgba(255,255,255,0.2)",border:"none",borderRadius:4,padding:"4px 8px",cursor:"pointer",color:"#fff",fontSize:14}}>✕</button>
               </div>
             </div>
-            <div style={{padding:"14px 20px",background:"#f8f9fa",borderBottom:"1px solid #e0e0e0",display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12}}>
+            <div style={{padding:"14px 20px",background:"#f8f9fa",borderBottom:"1px solid #e0e0e0",display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:12}}>
               <div style={{background:"#fff",padding:"10px",borderRadius:6,border:"1px solid #e0e0e0"}}>
                 <div style={{fontSize:10,color:"#666",textTransform:"uppercase",marginBottom:3}}>Taxable Value</div>
                 <div style={{fontSize:16,fontWeight:700,color:"#107c10",fontFamily:"Consolas,monospace"}}>₹{(showTdsBookingModal.taxableVal||0).toLocaleString("en-IN",{minimumFractionDigits:2})}</div>
@@ -1196,6 +1210,12 @@ function copyInv(invNo, btn) {
                 <div style={{fontSize:10,color:"#666",textTransform:"uppercase",marginBottom:3}}>TDS Booked</div>
                 <div style={{fontSize:16,fontWeight:700,color:"#0078d4",fontFamily:"Consolas,monospace"}}>₹{(showTdsBookingModal.tdsBooked||0).toLocaleString("en-IN",{minimumFractionDigits:2})}</div>
               </div>
+              <div style={{background:"#fff",padding:"10px",borderRadius:6,border:`1px solid ${(()=>{const inv=txnsInvoices?.find(i=>(i.invoiceNo||'').trim().toUpperCase()===(showTdsBookingModal.invoiceNo||'').toUpperCase());return(inv?.amountDue||0)>0?"#ffd54f":"#c8e6c9";})()}`}}>
+                  <div style={{fontSize:10,color:"#666",textTransform:"uppercase",marginBottom:3}}>Amount Due</div>
+                  <div style={{fontSize:16,fontWeight:700,fontFamily:"Consolas,monospace",color:(()=>{const inv=txnsInvoices?.find(i=>(i.invoiceNo||'').trim().toUpperCase()===(showTdsBookingModal.invoiceNo||'').toUpperCase());return(inv?.amountDue||0)>0?"#d59300":"#107c10";})()}}>
+                    {(()=>{const inv=txnsInvoices?.find(i=>(i.invoiceNo||'').trim().toUpperCase()===(showTdsBookingModal.invoiceNo||'').toUpperCase());const due=inv?.amountDue||0;return due>0?`₹${due.toLocaleString("en-IN",{minimumFractionDigits:2})}`:"Paid ✓";})()}
+                  </div>
+                </div>
               <div style={{background:"#fff",padding:"10px",borderRadius:6,border:`1px solid ${parseFloat(showTdsBookingModal.tdsPercent)>10.5?"#f0a0a0":"#e0e0e0"}`}}>
                 <div style={{fontSize:10,color:"#666",textTransform:"uppercase",marginBottom:3}}>Tax Rate</div>
                 <div style={{fontSize:16,fontWeight:700,color:parseFloat(showTdsBookingModal.tdsPercent)>10.5?"#a80000":"#5c2d91",fontFamily:"Consolas,monospace"}}>{showTdsBookingModal.tdsPercent}%{parseFloat(showTdsBookingModal.tdsPercent)>10.5&&<span style={{fontSize:11,marginLeft:4}}>⚠</span>}</div>
@@ -5161,6 +5181,7 @@ export default function App() {
                             <th style={{width:120}}>Invoice No.</th>
                             <th style={{width:85}}>Invoice Date</th>
                             <th style={{width:110,textAlign:"right"}}>Taxable Value</th>
+                            <th style={{width:100,textAlign:"right"}}>Amount Due</th>
                             <th style={{width:100,textAlign:"right"}}>Booked TDS</th>
                             <th style={{width:65,textAlign:"right"}}>Rate</th>
                             <th style={{width:60}}>Status</th>
@@ -5198,6 +5219,7 @@ export default function App() {
                                   <td><span style={{fontFamily:"Consolas,monospace",color:"var(--a)",fontSize:11,fontWeight:600}}>{inv.invoiceNo||"—"}</span></td>
                                   <td style={{fontFamily:"Consolas,monospace",fontSize:11}}>{inv.invoiceDate||"—"}</td>
                                   <td className="num" style={{fontWeight:600,color:"#107c10"}}>₹{taxableVal.toLocaleString("en-IN",{minimumFractionDigits:2})}</td>
+                                  <td className="num" style={{fontWeight:600,color:(inv.amountDue||0)>0?"#d59300":"#107c10"}}>{(inv.amountDue||0)>0?`₹${(inv.amountDue||0).toLocaleString("en-IN",{minimumFractionDigits:2})}`:<span style={{color:"#107c10",fontWeight:600}}>Paid ✓</span>}</td>
                                   <td className="num" style={{fontWeight:600,color:isExcess?"#a80000":hasNoTds?"#d59300":"#0078d4",cursor:tdsBooked>0?"pointer":"default",textDecoration:tdsBooked>0?"underline":"none"}} onClick={()=>{ if(tdsBooked>0) setInvTdsDetailPopup({ invoiceNo: inv.invoiceNo, entries: booksEntries, total: tdsBooked, taxableVal, tdsPercent, isExcess }); }} title={tdsBooked>0?`Click to see ${booksEntries.length} TDS entries`:""}>
                                     {tdsBooked>0?`₹${tdsBooked.toLocaleString("en-IN",{minimumFractionDigits:2})}`:"—"}
                                     {booksEntries.length>1&&<sup style={{fontSize:8,marginLeft:2,color:"#666"}}>{booksEntries.length}</sup>}
@@ -5214,6 +5236,7 @@ export default function App() {
                       <div className="smb">
                         <div className="si">Total Invoices: <span className="sv2">{(datasets["Invoices"]||[]).length}</span></div>
                         <div className="si">Total Taxable: <span className="sv2" style={{color:"#107c10"}}>₹{(datasets["Invoices"]||[]).reduce((s,r)=>s+(r.amountUntaxed||0),0).toLocaleString("en-IN",{minimumFractionDigits:2})}</span></div>
+                        <div className="si">Amount Due: <span className="sv2" style={{color:"#d59300"}}>₹{(datasets["Invoices"]||[]).reduce((s,r)=>s+(r.amountDue||0),0).toLocaleString("en-IN",{minimumFractionDigits:2})}</span></div>
                         <div className="si">No TDS: <span className="sv2" style={{color:"#d59300"}}>{(datasets["Invoices"]||[]).filter(inv=>{const invNo=(inv.invoiceNo||'').trim().toUpperCase();return(datasets["Books"]||[]).filter(b=>(b.invoiceNo||'').trim().toUpperCase()===invNo).reduce((s,b)=>s+(b.tdsDeducted||0),0)===0;}).length}</span></div>
                         <div className="si">Excess: <span className="sv2" style={{color:"#a80000"}}>{(datasets["Invoices"]||[]).filter(inv=>{const invNo=(inv.invoiceNo||'').trim().toUpperCase();const tds=(datasets["Books"]||[]).filter(b=>(b.invoiceNo||'').trim().toUpperCase()===invNo).reduce((s,b)=>s+(b.tdsDeducted||0),0);return tds>(inv.amountUntaxed||0)*0.105;}).length}</span></div>
                       </div>
