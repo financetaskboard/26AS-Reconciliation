@@ -449,7 +449,7 @@ app.post('/api/odoo/sync-invoices', async (req, res) => {
     let offset = 0;
     while (true) {
       const batch = await odooCall(session, 'account.move', 'search_read', [domain], {
-        fields: ['name', 'partner_id', 'invoice_date', 'amount_untaxed', 'amount_total', 'id'],
+        fields: ['name', 'partner_id', 'invoice_date', 'amount_untaxed', 'amount_total', 'amount_residual', 'id'],
         limit: BATCH, offset, order: 'invoice_date asc'
       });
       allInvoices.push(...batch);
@@ -470,6 +470,7 @@ app.post('/api/odoo/sync-invoices', async (req, res) => {
       partnerId: inv.partner_id?.[0] || null,  // Store Odoo partner ID
       amountUntaxed: inv.amount_untaxed || 0,
       amountTotal: inv.amount_total || 0,
+      amountDue: inv.amount_residual || 0,
       odooId: inv.id
     }));
 
