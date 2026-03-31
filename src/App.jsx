@@ -5341,11 +5341,24 @@ export default function App() {
                       <table className="dg">
                         <thead><tr>
                           <th style={{width:34}}><input type="checkbox" className="cb3" checked={selRows.size===sortedData.length&&sortedData.length>0} onChange={toggleAll}/></th>
-                          {[{k:"id",l:"#",w:42},{k:"deductorName",l:selDS==="Books"?"Party Name":"Deductor Name",w:200},{k:"tan",l:"TAN",w:110},{k:"section",l:"Section",w:80},{k:"amountPaid",l:"Amount Paid",w:120},{k:"tdsDeducted",l:"TDS Deducted",w:118},{k:"tdsDeposited",l:"TDS Deposited",w:118,skip:selDS==="Books"},{k:"invoiceNo",l:"Invoice No.",w:112,skip:selDS!=="Books"},{k:"date",l:"Trans. Date",w:96},{k:"invoiceDate",l:"Invoice Date",w:96,skip:selDS!=="Books"},{k:"quarter",l:"Qtr",w:55},{k:"financialYear",l:"F.Y.",w:76,skip:selDS==="Books"},{k:"bookingStatus",l:"B.Status",w:65,skip:selDS==="Books"},{k:"matchStatus",l:"Match",w:95}].filter(c=>!c.skip).map(c=><th key={c.k} style={{width:c.w,minWidth:c.w}} className={sortCol===c.k?"srt":""} onClick={()=>toggleSort(c.k)}>{c.l}{sortCol===c.k?(sortDir==="asc"?" ↑":" ↓"):""}</th>)}
+                          {[{k:"id",l:"#",w:42},{k:"deductorName",l:selDS==="Books"?"Party Name":"Deductor Name",w:200},{k:"tan",l:"TAN",w:110},{k:"section",l:"Section",w:80},{k:"amountPaid",l:"Amount Paid",w:120},{k:"tdsDeducted",l:"TDS Deducted",w:118},{k:"tdsDeposited",l:"TDS Deposited",w:118,skip:selDS==="Books"},{k:"invoiceNo",l:"Invoice No.",w:112,skip:selDS!=="Books"},{k:"date",l:"Trans. Date",w:96},{k:"invoiceDate",l:"Invoice Date",w:96,skip:selDS!=="Books"},{k:"_taxable",l:"Taxable Val",w:108,skip:selDS!=="Books"},{k:"_amtDue",l:"Amt Due",w:96,skip:selDS!=="Books"},{k:"_tdsRate",l:"TDS %",w:60,skip:selDS!=="Books"},{k:"_odooRef",l:"Odoo Ref",w:120,skip:selDS!=="Books"},{k:"quarter",l:"Qtr",w:55},{k:"financialYear",l:"F.Y.",w:76,skip:selDS==="Books"},{k:"bookingStatus",l:"B.Status",w:65,skip:selDS==="Books"},{k:"matchStatus",l:"Match",w:95}].filter(c=>!c.skip).map(c=><th key={c.k} style={{width:c.w,minWidth:c.w}} className={sortCol===c.k?"srt":""} onClick={()=>toggleSort(c.k)}>{c.l}{sortCol===c.k?(sortDir==="asc"?" ↑":" ↓"):""}</th>)}
                         </tr></thead>
                         <tbody>
-                          {sortedData.map(row=>{
+                          {(()=>{
+                            // Build invoice lookup map once for performance
+                            const invMap = {};
+                            (datasets["Invoices"]||[]).forEach(inv => {
+                              const k = (inv.invoiceNo||"").trim().toUpperCase();
+                              if (k) invMap[k] = inv;
+                            });
+                            return sortedData.map(row=>{
                             const isDup = selDS==="Books" && !!((row.invoiceNo||"").trim()) && dupInvoiceNos.has((row.invoiceNo||"").trim().toUpperCase());
+                            const invKey = selDS==="Books" ? (row.invoiceNo||"").trim().toUpperCase() : null;
+                            const inv = invKey ? invMap[invKey] : null;
+                            const taxableVal = inv?.amountUntaxed || 0;
+                            const amtDue = inv?.amountDue ?? null;
+                            const tdsRate = taxableVal > 0 ? ((row.tdsDeducted||0) / taxableVal * 100) : null;
+                            const odooRefData = invKey ? (odooRefs[invKey] || null) : null;
                             return (
                             <tr key={row.id} className={selRows.has(row.id)?"sel":""} onClick={()=>toggleRow(row.id)}
                               style={isDup&&!selRows.has(row.id)?{background:"#fff8e8"}:{}}>
@@ -5360,21 +5373,24 @@ export default function App() {
                               {selDS==="Books"&&<td style={{color:"var(--tx2)"}}>
                                 <span style={{display:"flex",alignItems:"center",gap:4}}>
                                   <span>{row.invoiceNo||"—"}</span>
-                                  {isDup&&<span title="Duplicate invoice number" style={{
-                                    fontSize:9,fontWeight:700,padding:"1px 5px",
-                                    borderRadius:3,background:"#d59300",color:"#fff",
-                                    flexShrink:0,letterSpacing:0.3
-                                  }}>DUP</span>}
+                                  {isDup&&<span title="Duplicate invoice number" style={{fontSize:9,fontWeight:700,padding:"1px 5px",borderRadius:3,background:"#d59300",color:"#fff",flexShrink:0,letterSpacing:0.3}}>DUP</span>}
                                 </span>
                               </td>}
-                              <td style={{color:"var(--tx2)"}}>{row.date||"—"}</td>
+                              <td style={{color:"var(--tx2)"}}>
+                                {row.date||"—"}
+                                {selDS==="Books"&&odooRefData&&<div style={{fontSize:9.5,fontFamily:"Consolas,monospace",color:"#5c2d91",fontWeight:600,marginTop:1,whiteSpace:"nowrap"}}>{odooRefData.odooRef||`ID:${odooRefData.moveId}`}</div>}
+                              </td>
                               {selDS==="Books"&&<td style={{color:"var(--grn)",fontWeight:600}}>{row.invoiceDate||"—"}</td>}
+                              {selDS==="Books"&&<td className="num" style={{color:taxableVal>0?"#107c10":"var(--tx3)",fontSize:11}}>{taxableVal>0?`₹${taxableVal.toLocaleString("en-IN",{minimumFractionDigits:2})}`:"—"}</td>}
+                              {selDS==="Books"&&<td className="num" style={{fontSize:11,color:amtDue===null?"var(--tx3)":amtDue>0?"#d59300":"#107c10",fontWeight:amtDue!=null?600:400}}>{amtDue===null?"—":amtDue>0?`₹${amtDue.toLocaleString("en-IN",{minimumFractionDigits:2})}`:<span style={{color:"#107c10"}}>Paid ✓</span>}</td>}
+                              {selDS==="Books"&&<td style={{textAlign:"right",fontSize:11,fontWeight:600,color:tdsRate===null?"var(--tx3)":tdsRate>10.5?"#a80000":"#5c2d91"}}>{tdsRate===null?"—":`${tdsRate.toFixed(1)}%`}</td>}
+                              {selDS==="Books"&&<td style={{fontSize:10,fontFamily:"Consolas,monospace"}}>{odooRefData?<span style={{color:"#5c2d91",fontWeight:600}} title={`Created: ${odooRefData.createdAt?.slice(0,10)||"?"}`}>{odooRefData.odooRef||`ID:${odooRefData.moveId}`}</span>:<span style={{color:"#ccc"}}>—</span>}</td>}
                               <td>{row.quarter?<span className="tg tg-q">{row.quarter}</span>:"—"}</td>
                               {selDS!=="Books"&&<><td>{row.financialYear||"—"}</td><td><span style={{fontFamily:"Consolas,monospace",fontSize:10,color:row.bookingStatus==="F"?"var(--grn)":"var(--amb)"}}>{row.bookingStatus||"—"}</span></td></>}
                               <td><span className={`tg ${row.matchStatus==="Matched"?"tg-m":row.matchStatus==="Mismatch"?"tg-mm":"tg-um"}`}>{row.matchStatus}</span></td>
                             </tr>
                             );
-                          })}
+                          });})()
                         </tbody>
                       </table>
                     </div>
