@@ -5382,13 +5382,13 @@ export default function App() {
                               </td>}
                               <td style={{color:"var(--tx2)"}}>
                                 {row.date||"—"}
-                                {selDS==="Books"&&odooRefData&&<div style={{fontSize:9.5,fontFamily:"Consolas,monospace",color:"#5c2d91",fontWeight:600,marginTop:1,whiteSpace:"nowrap"}}>{odooRefData.odooRef||`ID:${odooRefData.moveId}`}</div>}
+                                {selDS==="Books"&&(odooRefData||row.journalEntry)&&<div style={{fontSize:9.5,fontFamily:"Consolas,monospace",color:"#5c2d91",fontWeight:600,marginTop:1,whiteSpace:"nowrap"}}>{odooRefData?(odooRefData.odooRef||`ID:${odooRefData.moveId}`):row.journalEntry}</div>}
                               </td>
                               {selDS==="Books"&&<td style={{color:"var(--grn)",fontWeight:600}}>{row.invoiceDate||"—"}</td>}
                               {selDS==="Books"&&<td className="num" style={{color:taxableVal>0?"#107c10":"var(--tx3)",fontSize:11}}>{taxableVal>0?`₹${taxableVal.toLocaleString("en-IN",{minimumFractionDigits:2})}`:"—"}</td>}
                               {selDS==="Books"&&<td className="num" style={{fontSize:11,color:amtDue===null?"var(--tx3)":amtDue>0?"#d59300":"#107c10",fontWeight:amtDue!=null?600:400}}>{amtDue===null?"—":amtDue>0?`₹${amtDue.toLocaleString("en-IN",{minimumFractionDigits:2})}`:<span style={{color:"#107c10"}}>Paid ✓</span>}</td>}
                               {selDS==="Books"&&<td style={{textAlign:"right",fontSize:11,fontWeight:600,color:tdsRate===null?"var(--tx3)":tdsRate>10.5?"#a80000":"#5c2d91"}}>{tdsRate===null?"—":`${tdsRate.toFixed(1)}%`}</td>}
-                              {selDS==="Books"&&<td style={{fontSize:10,fontFamily:"Consolas,monospace"}}>{odooRefData?<span style={{color:"#5c2d91",fontWeight:600}} title={`Created: ${odooRefData.createdAt?.slice(0,10)||"?"}`}>{odooRefData.odooRef||`ID:${odooRefData.moveId}`}</span>:<span style={{color:"#ccc"}}>—</span>}</td>}
+                              {selDS==="Books"&&<td style={{fontSize:10,fontFamily:"Consolas,monospace"}}>{odooRefData?<span style={{color:"#5c2d91",fontWeight:600}} title={`Created: ${odooRefData.createdAt?.slice(0,10)||"?"}`}>{odooRefData.odooRef||`ID:${odooRefData.moveId}`}</span>:row.journalEntry?<span style={{color:"#5c2d91",fontWeight:500}} title="Synced from Odoo">{row.journalEntry}</span>:<span style={{color:"#ccc"}}>—</span>}</td>}
                               <td>{row.quarter?<span className="tg tg-q">{row.quarter}</span>:"—"}</td>
                               {selDS!=="Books"&&<><td>{row.financialYear||"—"}</td><td><span style={{fontFamily:"Consolas,monospace",fontSize:10,color:row.bookingStatus==="F"?"var(--grn)":"var(--amb)"}}>{row.bookingStatus||"—"}</span></td></>}
                               <td><span className={`tg ${row.matchStatus==="Matched"?"tg-m":row.matchStatus==="Mismatch"?"tg-mm":"tg-um"}`}>{row.matchStatus}</span></td>
