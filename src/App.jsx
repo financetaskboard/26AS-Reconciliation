@@ -2935,6 +2935,8 @@ export default function App() {
             apiKey: odooCredentials.password,
             fyStart,
             fyEnd,
+            tdsAccountCode: '231110',
+            debtorAccountCode: '251000',
             prefixes: companyPrefixes.join(',')
           })
         }).then(r => r.json());
