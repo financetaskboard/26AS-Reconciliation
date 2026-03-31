@@ -3725,6 +3725,15 @@ export default function App() {
     });
     return new Set(Object.keys(counts).filter(k => counts[k] > 1));
   })();
+  // Invoice lookup map for Books tab extra columns
+  const invMap = (() => {
+    const m = {};
+    (datasets["Invoices"]||[]).forEach(inv => {
+      const k = (inv.invoiceNo||"").trim().toUpperCase();
+      if (k) m[k] = inv;
+    });
+    return m;
+  })();
   const filtered = activeData.filter(r=>{
     if (showDupOnly && selDS === "Books") {
       const inv = (r.invoiceNo||"").trim().toUpperCase();
@@ -5344,14 +5353,7 @@ export default function App() {
                           {[{k:"id",l:"#",w:42},{k:"deductorName",l:selDS==="Books"?"Party Name":"Deductor Name",w:200},{k:"tan",l:"TAN",w:110},{k:"section",l:"Section",w:80},{k:"amountPaid",l:"Amount Paid",w:120},{k:"tdsDeducted",l:"TDS Deducted",w:118},{k:"tdsDeposited",l:"TDS Deposited",w:118,skip:selDS==="Books"},{k:"invoiceNo",l:"Invoice No.",w:112,skip:selDS!=="Books"},{k:"date",l:"Trans. Date",w:96},{k:"invoiceDate",l:"Invoice Date",w:96,skip:selDS!=="Books"},{k:"_taxable",l:"Taxable Val",w:108,skip:selDS!=="Books"},{k:"_amtDue",l:"Amt Due",w:96,skip:selDS!=="Books"},{k:"_tdsRate",l:"TDS %",w:60,skip:selDS!=="Books"},{k:"_odooRef",l:"Odoo Ref",w:120,skip:selDS!=="Books"},{k:"quarter",l:"Qtr",w:55},{k:"financialYear",l:"F.Y.",w:76,skip:selDS==="Books"},{k:"bookingStatus",l:"B.Status",w:65,skip:selDS==="Books"},{k:"matchStatus",l:"Match",w:95}].filter(c=>!c.skip).map(c=><th key={c.k} style={{width:c.w,minWidth:c.w}} className={sortCol===c.k?"srt":""} onClick={()=>toggleSort(c.k)}>{c.l}{sortCol===c.k?(sortDir==="asc"?" ↑":" ↓"):""}</th>)}
                         </tr></thead>
                         <tbody>
-                          {(()=>{
-                            // Build invoice lookup map once for performance
-                            const invMap = {};
-                            (datasets["Invoices"]||[]).forEach(inv => {
-                              const k = (inv.invoiceNo||"").trim().toUpperCase();
-                              if (k) invMap[k] = inv;
-                            });
-                            return sortedData.map(row=>{
+                          {sortedData.map(row=>{
                             const isDup = selDS==="Books" && !!((row.invoiceNo||"").trim()) && dupInvoiceNos.has((row.invoiceNo||"").trim().toUpperCase());
                             const invKey = selDS==="Books" ? (row.invoiceNo||"").trim().toUpperCase() : null;
                             const inv = invKey ? invMap[invKey] : null;
@@ -5390,7 +5392,7 @@ export default function App() {
                               <td><span className={`tg ${row.matchStatus==="Matched"?"tg-m":row.matchStatus==="Mismatch"?"tg-mm":"tg-um"}`}>{row.matchStatus}</span></td>
                             </tr>
                             );
-                          });})()
+                          })}
                         </tbody>
                       </table>
                     </div>
