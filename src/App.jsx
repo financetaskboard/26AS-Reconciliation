@@ -515,7 +515,7 @@ const css = `
 `;
 
 // ── TAN DETAIL MODAL ──────────────────────────────────────────────────────────
-function TanDetailModal({ tan, tanRow, txns26AS, txnsBooks, txnsInvoices, onClose, fmt, FmtDiff, odooUrl, odooConfig, tanMaster, odooRefs, setOdooRefs }) {
+function TanDetailModal({ tan, tanRow, txns26AS, txnsBooks, txnsInvoices, onClose, fmt, FmtDiff, odooUrl, odooConfig, tanMaster, odooRefs, setOdooRefs, setOdooLog }) {
   const as = txns26AS.filter(r => r.tan?.toUpperCase().trim() === tan);
 
   // Expand Books rows — Odoo may store combined invoice refs joined by '.'
@@ -919,71 +919,60 @@ function copyInv(invNo, btn) {
       const data = await res.json();
       
       if (data.ok) {
-        // Save Odoo references to state and Firebase
         const newRefs = { ...odooRefs };
         const createdList = data.results?.filter(r => r.status === 'created') || [];
         const failedList  = data.results?.filter(r => r.status === 'error')   || [];
         const now = new Date().toISOString();
-
         createdList.forEach(r => {
           if (r.invoiceNo && (r.odooRef || r.moveId)) {
             newRefs[r.invoiceNo.toUpperCase()] = {
-              odooRef: r.odooRef || null,
-              moveId: r.moveId,
-              posted: r.posted || false,
-              createdAt: now,
-              tan: tan,
-              company: data.company || ''
+              odooRef: r.odooRef || null, moveId: r.moveId,
+              posted: r.posted || false, createdAt: now, tan, company: data.company || ''
             };
           }
         });
         setOdooRefs(newRefs);
         saveToStore('odooRefs', newRefs);
-
-        // Append to persistent Push Log (stored in Firebase)
         const entryMap = {};
-        entries.forEach(e => { entryMap[(e.invoiceNo || '').toUpperCase()] = e; });
+        entries.forEach(e => { entryMap[(e.invoiceNo||'').toUpperCase()] = e; });
         const logEntry = {
-          id: now + '_' + tan,
-          pushDate: now,
-          tan: tan,
-          deductorName: deductorName || tan,
-          company: data.company || '',
-          totalCreated: data.created || 0,
-          totalFailed: failedList.length,
+          id: now + '_' + tan, pushDate: now, tan,
+          deductorName: deductorName || tan, company: data.company || '',
+          totalCreated: data.created || 0, totalFailed: failedList.length,
           entries: [
             ...createdList.map(r => ({
-              invoiceNo: r.invoiceNo || '',
-              odooRef:   r.odooRef   || '',
-              moveId:    r.moveId    || '',
-              amount:    (entryMap[(r.invoiceNo || '').toUpperCase()]?.amount || 0),
-              status:    r.posted ? 'Posted' : 'Draft',
-              posted:    r.posted || false,
-              error:     ''
+              invoiceNo: r.invoiceNo||'', odooRef: r.odooRef||'', moveId: r.moveId||'',
+              amount: entryMap[(r.invoiceNo||'').toUpperCase()]?.amount || 0,
+              status: r.posted ? 'Posted' : 'Draft', posted: r.posted||false, error: ''
             })),
             ...failedList.map(r => ({
-              invoiceNo: r.invoiceNo || '',
-              odooRef: '', moveId: '',
-              amount:  (entryMap[(r.invoiceNo || '').toUpperCase()]?.amount || 0),
-              status: 'Failed',
-              posted: false,
-              error:  r.error || ''
+              invoiceNo: r.invoiceNo||'', odooRef:'', moveId:'',
+              amount: entryMap[(r.invoiceNo||'').toUpperCase()]?.amount || 0,
+              status:'Failed', posted:false, error: r.error||''
             }))
           ]
         };
         setOdooLog(prev => [logEntry, ...prev.slice(0, 999)]);
-
-        const createdRefs   = createdList.map(r => `\u2022 ${r.invoiceNo} \u2192 ${r.odooRef || ('ID:' + r.moveId)} ${r.posted ? '\u2705' : '(Draft)'}`).join('\n') || '';
-        const failedDetails = failedList.map(r => `\u2022 ${r.invoiceNo}: ${r.error}`).join('\n') || '';
+        const createdRefs   = createdList.map(r=>`• ${r.invoiceNo} → ${r.odooRef||'ID:'+r.moveId} ${r.posted?'[✓]':'(Draft)'}`).join('\n')||'';
+        const failedDetails = failedList.map(r=>`• ${r.invoiceNo}: ${r.error}`).join('\n')||'';
         alert(
-          `\u2705 Success!${data.company ? ` (${data.company})` : ''}\n\n` +
-          `Created: ${data.created} entries\n` +
-          `${createdRefs ? `\nOdoo References:\n${createdRefs}` : ''}` +
-          `${failedList.length > 0 ? `\n\nFailed: ${failedList.length}\n${failedDetails}` : ''}` +
-          `\n\n\ud83d\udcdd Log saved \u2192 check Push Log tab`
+          `Success!${data.company?` (${data.company})`:''}
+
+Created: ${data.created} entries
+`+
+          `${createdRefs?`
+Odoo References:
+${createdRefs}`:''}`+
+          `${failedList.length>0?`
+
+Failed: ${failedList.length}
+${failedDetails}`:''}`+
+          `
+
+Log saved - check Push Log tab`
         );
       } else {
-        alert(`\u274c Error: ${data.error}`);
+        alert('Error: ' + data.error);
       }
     } catch (err) {
       alert(`❌ Network error: ${err.message}`);
@@ -1579,9 +1568,10 @@ export default function App() {
 
   // ── EMAIL TRACKER STATE ──────────────────────────────────────────────────────
   const [emailLog, setEmailLog] = useState([]);          // [{id,tan,name,to,subject,sentAt,status,threadId,messageId,pendingAmt,fy,company,openedAt,repliedAt,lastChecked}]
-  const [odooLog,  setOdooLog]  = useState([]);          // [{id,pushDate,tan,deductorName,company,totalCreated,totalFailed,entries:[{invoiceNo,odooRef,moveId,amount,status,posted,error}]}]
+  const [odooLog, setOdooLog] = useState([]);
   const [odooLogFilter, setOdooLogFilter] = useState('All');
   const [odooLogSearch, setOdooLogSearch] = useState('');
+  const [odooLogPeriod, setOdooLogPeriod] = useState('All');
   const [trackerSearch, setTrackerSearch] = useState("");
   const [trackerFilter, setTrackerFilter] = useState("All"); // All | Sent | Opened | Replied | Failed
   const [checkingStatus, setCheckingStatus] = useState(false);
@@ -2578,7 +2568,7 @@ export default function App() {
           saveToStore('selYear', selYear),
           saveToStore('tanEmails', tanEmails),
           saveToStore('emailLog', emailLog),
-          saveToStore('odooLog',   odooLog),
+          saveToStore('odooLog', odooLog),
         ]);
         setStorageStatus("saved"); setLastSaved(new Date().toLocaleTimeString());
       } catch (e) { setStorageStatus("idle"); console.warn('Auto-save failed:', e); }
@@ -5502,7 +5492,7 @@ export default function App() {
             )}
 
             {detailTAN&&(
-              <TanDetailModal tan={detailTAN} tanRow={liveResults.find(r=>r.tan===detailTAN)} txns26AS={datasets["26AS"]} txnsBooks={datasets["Books"]} txnsInvoices={datasets["Invoices"]||[]} onClose={()=>setDetailTAN(null)} fmt={fmt} FmtDiff={FmtDiff} odooUrl={curCompany.odooUrl || companies.find(c=>c.odooEnabled&&c.odooUrl)?.odooUrl || ''} odooConfig={curCompany.odooEnabled ? {url:curCompany.odooUrl,database:curCompany.odooDatabase,username:curCompany.odooUsername,password:curCompany.odooPassword} : (()=>{const oc=companies.find(c=>c.odooEnabled&&c.odooUrl);return oc?{url:oc.odooUrl,database:oc.odooDatabase,username:oc.odooUsername,password:oc.odooPassword}:null;})() } tanMaster={tanMaster} odooRefs={odooRefs} setOdooRefs={setOdooRefs}/>
+              <TanDetailModal tan={detailTAN} tanRow={liveResults.find(r=>r.tan===detailTAN)} txns26AS={datasets["26AS"]} txnsBooks={datasets["Books"]} txnsInvoices={datasets["Invoices"]||[]} onClose={()=>setDetailTAN(null)} fmt={fmt} FmtDiff={FmtDiff} odooUrl={curCompany.odooUrl || companies.find(c=>c.odooEnabled&&c.odooUrl)?.odooUrl || ''} odooConfig={curCompany.odooEnabled ? {url:curCompany.odooUrl,database:curCompany.odooDatabase,username:curCompany.odooUsername,password:curCompany.odooPassword} : (()=>{const oc=companies.find(c=>c.odooEnabled&&c.odooUrl);return oc?{url:oc.odooUrl,database:oc.odooDatabase,username:oc.odooUsername,password:oc.odooPassword}:null;})() } tanMaster={tanMaster} odooRefs={odooRefs} setOdooRefs={setOdooRefs} setOdooLog={setOdooLog}/>
             )}
 
             {/* TDS Details Popup for Invoices Tab */}
@@ -6703,179 +6693,231 @@ export default function App() {
             )}
           </div>
 
-          {/* ══ ODOO PUSH LOG VIEW ══════════════════════════════════════════ */}
+          {/* ODOO PUSH LOG VIEW */}
           {view==="odoolog"&&(()=>{
             const fmtDT = iso => iso ? new Date(iso).toLocaleString("en-IN",{day:"2-digit",month:"short",year:"numeric",hour:"2-digit",minute:"2-digit"}) : "—";
             const fmtD  = iso => iso ? new Date(iso).toLocaleDateString("en-IN",{day:"2-digit",month:"short",year:"numeric"}) : "—";
-            const fmt   = n => n ? `\u20b9${Number(n).toLocaleString("en-IN",{minimumFractionDigits:2})}` : "\u20b90.00";
+            const fmtAmt = n => "₹" + Number(n||0).toLocaleString("en-IN",{minimumFractionDigits:2,maximumFractionDigits:2});
 
-            // Filter
-            const filtered = odooLog.filter(push => {
-              const matchStatus = odooLogFilter==="All" || (odooLogFilter==="HasFailed" ? push.totalFailed>0 : odooLogFilter==="AllPosted" ? push.totalFailed===0 : true);
-              const matchSearch = !odooLogSearch || [push.tan,push.deductorName,push.company].some(v=>String(v||"").toLowerCase().includes(odooLogSearch.toLowerCase()));
-              return matchStatus && matchSearch;
+            // Build period options from log data
+            const periodOptions = ["All"];
+            const seen = new Set();
+            [...odooLog].sort((a,b)=>b.pushDate.localeCompare(a.pushDate)).forEach(p=>{
+              const d = new Date(p.pushDate);
+              const key = d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0");
+              const label = d.toLocaleDateString("en-IN",{month:"long",year:"numeric"});
+              if(!seen.has(key)){seen.add(key);periodOptions.push({key,label});}
             });
 
-            const totalPushes   = odooLog.length;
-            const totalEntries  = odooLog.reduce((s,p)=>s+p.totalCreated,0);
-            const totalFailed   = odooLog.reduce((s,p)=>s+p.totalFailed,0);
-            const totalAmt      = odooLog.reduce((s,p)=>s+p.entries.filter(e=>e.status!=="Failed").reduce((ss,e)=>ss+(e.amount||0),0),0);
+            const filtered = odooLog.filter(push => {
+              const d = new Date(push.pushDate);
+              const key = d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0");
+              const matchPeriod = odooLogPeriod==="All" || odooLogPeriod===key;
+              const matchStatus = odooLogFilter==="All" || (odooLogFilter==="HasFailed"?push.totalFailed>0:push.totalFailed===0);
+              const matchSearch = !odooLogSearch||[push.tan,push.deductorName,push.company].some(v=>String(v||"").toLowerCase().includes(odooLogSearch.toLowerCase()));
+              return matchPeriod && matchStatus && matchSearch;
+            });
 
-            // Download CSV for a single push or all filtered pushes
+            const totalEntries = filtered.reduce((s,p)=>s+p.totalCreated,0);
+            const totalFailed  = filtered.reduce((s,p)=>s+p.totalFailed,0);
+            const totalAmt     = filtered.reduce((s,p)=>s+p.entries.filter(e=>e.status!=="Failed").reduce((ss,e)=>ss+(e.amount||0),0),0);
+
             const downloadCSV = (pushes, label) => {
-              const rows = [['Push Date','TAN','Deductor Name','Company','Invoice No','Odoo TDS Entry','Move ID','TDS Amount (Rs)','Status','Error'].join(',')];
-              pushes.forEach(push => {
-                push.entries.forEach(e => {
-                  rows.push([
-                    fmtD(push.pushDate),
-                    `"${push.tan||''}"`,
-                    `"${(push.deductorName||'').replace(/"/g,"'")}"`,
-                    `"${(push.company||'').replace(/"/g,"'")}"`,
-                    `"${e.invoiceNo||''}"`,
-                    `"${e.odooRef||''}"`,
-                    e.moveId||'',
-                    (e.amount||0).toFixed(2),
-                    e.status||'',
-                    `"${(e.error||'').replace(/"/g,"'")}"`
-                  ].join(','));
-                });
-              });
-              const blob = new Blob([rows.join('\n')],{type:'text/csv'});
-              const url  = URL.createObjectURL(blob);
-              const a    = document.createElement('a');
-              a.href=url; a.download=`OdooTDS_PushLog_${label}.csv`; a.click();
-              URL.revokeObjectURL(url);
+              const rows = [["Push Date","TAN","Deductor","Company","Invoice No","Odoo TDS Entry","Move ID","TDS Amount","Status","Error"].join(",")];
+              pushes.forEach(push => push.entries.forEach(e => {
+                rows.push([
+                  fmtD(push.pushDate),
+                  '"'+push.tan+'"',
+                  '"'+(push.deductorName||"").replace(/"/g,"'")+'"',
+                  '"'+(push.company||"")+'"',
+                  '"'+(e.invoiceNo||"")+'"',
+                  '"'+(e.odooRef||"")+'"',
+                  e.moveId||"",
+                  (e.amount||0).toFixed(2),
+                  e.status||"",
+                  '"'+(e.error||"").replace(/"/g,"'")+'"'
+                ].join(","));
+              }));
+              const a = document.createElement("a");
+              a.href = URL.createObjectURL(new Blob([rows.join("\n")],{type:"text/csv"}));
+              a.download = "OdooTDS_PushLog_"+label+".csv"; a.click();
             };
 
-            // Grouped by date for display
             const byDate = {};
-            filtered.forEach(p => {
-              const d = (p.pushDate||'').slice(0,10);
-              if (!byDate[d]) byDate[d] = [];
-              byDate[d].push(p);
-            });
+            filtered.forEach(p => { const d=(p.pushDate||"").slice(0,10); (byDate[d]=byDate[d]||[]).push(p); });
             const sortedDates = Object.keys(byDate).sort((a,b)=>b.localeCompare(a));
 
             return (
-              <div style={{flex:1,overflow:"auto",display:"flex",flexDirection:"column"}}>
-                {/* Stats Bar */}
-                <div style={{background:"var(--wh)",borderBottom:"1px solid var(--bd)",padding:"14px 24px",display:"flex",gap:0,flexShrink:0}}>
+              <div style={{flex:1,overflow:"auto",display:"flex",flexDirection:"column",minHeight:0}}>
+
+                {/* Stats bar */}
+                <div style={{background:"var(--wh)",borderBottom:"1px solid var(--bd)",padding:"12px 24px",display:"flex",alignItems:"stretch",flexShrink:0}}>
                   {[
-                    {l:"Total Pushes",v:totalPushes,c:"#5c2d91",bg:"#f0e8ff"},
-                    {l:"Entries Created",v:totalEntries,c:"#107c10",bg:"#e8f8e8"},
-                    {l:"Failed",v:totalFailed,c:"#a80000",bg:"#fde8e8"},
-                    {l:"Total TDS Pushed",v:fmt(totalAmt),c:"#0078d4",bg:"#e6f3fb",big:true},
+                    {l:"Total Pushes",   v:filtered.length, c:"#5c2d91"},
+                    {l:"Entries Created",v:totalEntries,    c:"#107c10"},
+                    {l:"Failed",         v:totalFailed,     c:"#a80000"},
+                    {l:"Total TDS Pushed",v:fmtAmt(totalAmt),c:"#0078d4",wide:true},
                   ].map((s,i)=>(
-                    <div key={i} style={{flex:s.big?2:1,padding:"10px 18px",borderRight:i<3?"1px solid var(--bd)":"none"}}>
-                      <div style={{fontSize:10.5,color:"var(--tx2)",textTransform:"uppercase",letterSpacing:"0.5px",marginBottom:3}}>{s.l}</div>
-                      <div style={{fontSize:s.big?20:26,fontWeight:300,color:s.c}}>{s.v}</div>
+                    <div key={i} style={{flex:s.wide?2:1,padding:"8px 18px",borderRight:i<3?"1px solid var(--bd)":"none"}}>
+                      <div style={{fontSize:10,color:"var(--tx2)",textTransform:"uppercase",letterSpacing:"0.6px",marginBottom:4}}>{s.l}</div>
+                      <div style={{fontSize:s.wide?16:22,fontWeight:300,color:s.c,fontFamily:s.wide?"Consolas,monospace":"inherit"}}>{s.v}</div>
                     </div>
                   ))}
-                  <div style={{display:"flex",alignItems:"center",gap:8,padding:"0 16px",marginLeft:"auto"}}>
-                    <button onClick={()=>downloadCSV(filtered,`All_${new Date().toISOString().slice(0,10)}`)} disabled={!filtered.length}
-                      style={{background:"#107c10",color:"#fff",border:"none",borderRadius:3,padding:"7px 14px",cursor:"pointer",fontSize:12,fontFamily:"inherit",fontWeight:600,opacity:filtered.length?1:0.4}}>
-                      \u2b07 Download All ({filtered.length} pushes)
+                  <div style={{display:"flex",alignItems:"center",gap:8,padding:"0 0 0 20px",marginLeft:"auto",borderLeft:"1px solid var(--bd)"}}>
+                    <button
+                      onClick={()=>downloadCSV(filtered, (odooLogPeriod==="All"?"All":odooLogPeriod)+"_"+new Date().toISOString().slice(0,10))}
+                      disabled={!filtered.length}
+                      style={{background:"#107c10",color:"#fff",border:"none",borderRadius:4,padding:"8px 16px",cursor:"pointer",fontSize:12,fontFamily:"inherit",fontWeight:600,opacity:filtered.length?1:0.4,display:"flex",alignItems:"center",gap:6}}>
+                      Download CSV ({filtered.length} pushes)
                     </button>
-                    <button onClick={()=>{if(window.confirm(`Clear all ${odooLog.length} push log entries? This cannot be undone.`)){setOdooLog([]);}}} disabled={!odooLog.length}
-                      style={{background:"none",border:"1px solid var(--red,#a80000)",borderRadius:3,padding:"7px 12px",cursor:"pointer",fontSize:12,fontFamily:"inherit",color:"var(--red,#a80000)",opacity:odooLog.length?1:0.4}}>
-                      \ud83d\uddd1 Clear Log
+                    <button
+                      onClick={()=>{if(window.confirm("Clear all "+odooLog.length+" log entries? This cannot be undone."))setOdooLog([]);}}
+                      disabled={!odooLog.length}
+                      style={{background:"none",border:"1px solid #a80000",borderRadius:4,padding:"8px 12px",cursor:"pointer",fontSize:12,fontFamily:"inherit",color:"#a80000",opacity:odooLog.length?1:0.4}}>
+                      Clear Log
                     </button>
                   </div>
                 </div>
 
-                {/* Filter + Search */}
-                <div style={{background:"var(--wh)",borderBottom:"1px solid var(--bd)",padding:"8px 24px",display:"flex",alignItems:"center",gap:10}}>
+                {/* Filter + Period + Search bar */}
+                <div style={{background:"var(--wh)",borderBottom:"1px solid var(--bd)",padding:"8px 24px",display:"flex",alignItems:"center",gap:10,flexWrap:"wrap",flexShrink:0}}>
+
+                  {/* Period selector */}
+                  <div style={{display:"flex",alignItems:"center",gap:6}}>
+                    <span style={{fontSize:11,fontWeight:600,color:"var(--tx2)",textTransform:"uppercase",letterSpacing:"0.4px"}}>Period</span>
+                    <select value={odooLogPeriod} onChange={e=>setOdooLogPeriod(e.target.value)}
+                      style={{padding:"4px 10px",border:"1px solid var(--bd)",borderRadius:3,fontSize:12,fontFamily:"inherit",background:"var(--wh)",color:"var(--tx)",cursor:"pointer",outline:"none"}}>
+                      {periodOptions.map(p=>
+                        typeof p==="string"
+                          ? <option key="All" value="All">All Months</option>
+                          : <option key={p.key} value={p.key}>{p.label}</option>
+                      )}
+                    </select>
+                  </div>
+
+                  <div style={{width:1,height:20,background:"var(--bd)",margin:"0 4px"}}/>
+
+                  {/* Status filter */}
                   {[["All","All"],["AllPosted","No Failures"],["HasFailed","Has Failures"]].map(([k,l])=>(
-                    <button key={k} onClick={()=>setOdooLogFilter(k)} style={{background:odooLogFilter===k?"var(--a)":"none",color:odooLogFilter===k?"#fff":"var(--tx2)",border:`1px solid ${odooLogFilter===k?"var(--a)":"var(--bd)"}`,borderRadius:3,padding:"3px 12px",cursor:"pointer",fontSize:11.5,fontFamily:"inherit"}}>{l}</button>
+                    <button key={k} onClick={()=>setOdooLogFilter(k)}
+                      style={{background:odooLogFilter===k?"var(--a)":"none",color:odooLogFilter===k?"#fff":"var(--tx2)",
+                        border:"1px solid "+(odooLogFilter===k?"var(--a)":"var(--bd)"),borderRadius:3,
+                        padding:"4px 12px",cursor:"pointer",fontSize:11.5,fontFamily:"inherit",transition:"all 0.15s"}}>
+                      {l}
+                    </button>
                   ))}
+
+                  {/* Search */}
                   <div style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:8}}>
-                    <div style={{display:"flex",alignItems:"center",gap:6,background:"var(--sur)",borderRadius:3,padding:"4px 10px",border:"1px solid var(--bd)"}}>
-                      <input placeholder="Search TAN, deductor…" value={odooLogSearch} onChange={e=>setOdooLogSearch(e.target.value)} style={{border:"none",background:"none",outline:"none",fontSize:12,fontFamily:"inherit",width:200,color:"var(--tx)"}}/>
-                      {odooLogSearch&&<span onClick={()=>setOdooLogSearch("")} style={{cursor:"pointer",color:"#aaa",fontSize:11}}>\u2715</span>}
+                    <div style={{display:"flex",alignItems:"center",gap:6,background:"var(--sur)",borderRadius:3,padding:"5px 10px",border:"1px solid var(--bd)"}}>
+                      <svg width="12" height="12" viewBox="0 0 16 16" fill="none"><circle cx="6" cy="6" r="5" stroke="#888" strokeWidth="1.5"/><path d="M10 10l4 4" stroke="#888" strokeWidth="1.5" strokeLinecap="round"/></svg>
+                      <input placeholder="Search TAN, deductor, company..." value={odooLogSearch}
+                        onChange={e=>setOdooLogSearch(e.target.value)}
+                        style={{border:"none",background:"none",outline:"none",fontSize:12,fontFamily:"inherit",width:220,color:"var(--tx)"}}/>
+                      {odooLogSearch&&<span onClick={()=>setOdooLogSearch("")} style={{cursor:"pointer",color:"#aaa",fontSize:12,lineHeight:1}}>x</span>}
                     </div>
-                    <span style={{fontSize:11.5,color:"var(--tx2)"}}>{filtered.length} pushes</span>
+                    <span style={{fontSize:11.5,color:"var(--tx2)",whiteSpace:"nowrap"}}>{filtered.length} push{filtered.length!==1?"es":""}</span>
                   </div>
                 </div>
 
-                {/* Log grouped by date */}
+                {/* Content area */}
                 <div style={{flex:1,overflow:"auto",padding:"16px 24px",display:"flex",flexDirection:"column",gap:16}}>
+
                   {!odooLog.length && (
-                    <div style={{margin:"60px auto",textAlign:"center",color:"var(--tx2)",fontSize:13}}>
-                      <div style={{fontSize:36,marginBottom:12}}>\ud83d\udce4</div>
-                      <div style={{fontWeight:600,marginBottom:4}}>No push log entries yet</div>
-                      <div style={{fontSize:11.5}}>Push journal entries to Odoo from the Reconciliation tab to see logs here.</div>
+                    <div style={{margin:"80px auto",textAlign:"center",color:"var(--tx2)"}}>
+                      <div style={{fontSize:40,marginBottom:12}}>&#128228;</div>
+                      <div style={{fontSize:14,fontWeight:600,marginBottom:6,color:"var(--tx)"}}>No push log entries yet</div>
+                      <div style={{fontSize:12}}>Push journal entries to Odoo from the Reconciliation tab to see logs here.</div>
                     </div>
                   )}
-                  {sortedDates.map(date => (
+
+                  {odooLog.length>0 && filtered.length===0 && (
+                    <div style={{margin:"80px auto",textAlign:"center",color:"var(--tx2)"}}>
+                      <div style={{fontSize:32,marginBottom:10}}>&#128269;</div>
+                      <div style={{fontSize:13,fontWeight:600,marginBottom:4,color:"var(--tx)"}}>No results</div>
+                      <div style={{fontSize:11.5}}>Try changing the period or filters.</div>
+                    </div>
+                  )}
+
+                  {sortedDates.map(date=>(
                     <div key={date}>
                       {/* Date group header */}
-                      <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:8}}>
-                        <div style={{fontSize:11,fontWeight:700,color:"var(--a)",textTransform:"uppercase",letterSpacing:1}}>{fmtD(date)}</div>
+                      <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10}}>
+                        <div style={{fontSize:11,fontWeight:700,color:"var(--a)",textTransform:"uppercase",letterSpacing:"0.8px",whiteSpace:"nowrap"}}>{fmtD(date)}</div>
                         <div style={{flex:1,height:1,background:"var(--bd)"}}/>
-                        <button onClick={()=>downloadCSV(byDate[date],date)} style={{fontSize:10.5,background:"none",border:"1px solid var(--bd)",borderRadius:3,padding:"2px 8px",cursor:"pointer",color:"var(--tx2)",fontFamily:"inherit"}}>
-                          \u2b07 Download {date}
+                        <span style={{fontSize:11,color:"var(--tx2)"}}>{byDate[date].length} push{byDate[date].length!==1?"es":""}</span>
+                        <button onClick={()=>downloadCSV(byDate[date],date)}
+                          style={{fontSize:11,background:"none",border:"1px solid var(--bd)",borderRadius:3,padding:"3px 10px",cursor:"pointer",color:"var(--tx2)",fontFamily:"inherit",whiteSpace:"nowrap"}}>
+                          Download {date}
                         </button>
                       </div>
-                      {/* Push cards for this date */}
-                      <div style={{display:"flex",flexDirection:"column",gap:8}}>
-                        {byDate[date].map(push => {
-                          const pushTotal = push.entries.filter(e=>e.status!=="Failed").reduce((s,e)=>s+(e.amount||0),0);
-                          return (
-                            <div key={push.id} style={{background:"var(--wh)",border:"1px solid var(--bd)",borderRadius:6,overflow:"hidden"}}>
-                              {/* Card header */}
-                              <div style={{display:"flex",alignItems:"center",gap:12,padding:"10px 14px",background:push.totalFailed>0?"#fff8f8":"#f6fff6",borderBottom:"1px solid var(--bd)"}}>
-                                <span style={{fontSize:18}}>{push.totalFailed>0?"\u26a0\ufe0f":"\u2705"}</span>
-                                <div>
-                                  <div style={{fontSize:12.5,fontWeight:700,color:"var(--tx)"}}>{push.deductorName}</div>
-                                  <div style={{fontSize:10.5,color:"var(--tx2)"}}>{push.tan}{push.company?` \u00b7 ${push.company}`:""}</div>
-                                </div>
-                                <div style={{marginLeft:"auto",textAlign:"right",display:"flex",gap:20,alignItems:"center"}}>
-                                  <div>
-                                    <div style={{fontSize:10,color:"var(--tx2)",textTransform:"uppercase"}}>Time</div>
-                                    <div style={{fontSize:11.5,fontFamily:"Consolas,monospace"}}>{fmtDT(push.pushDate).split(", ")[1]||"—"}</div>
-                                  </div>
-                                  <div>
-                                    <div style={{fontSize:10,color:"var(--tx2)",textTransform:"uppercase"}}>Entries</div>
-                                    <div style={{fontSize:13,fontWeight:600,color:push.totalFailed>0?"#a80000":"#107c10"}}>{push.totalCreated} ✓{push.totalFailed>0?` / ${push.totalFailed} ✗`:""}</div>
-                                  </div>
-                                  <div>
-                                    <div style={{fontSize:10,color:"var(--tx2)",textTransform:"uppercase"}}>TDS Amount</div>
-                                    <div style={{fontSize:13,fontWeight:700,color:"#0078d4",fontFamily:"Consolas,monospace"}}>{fmt(pushTotal)}</div>
-                                  </div>
-                                  <button onClick={()=>downloadCSV([push],`${push.tan}_${date}`)} style={{fontSize:10.5,background:"none",border:"1px solid var(--bd)",borderRadius:3,padding:"4px 10px",cursor:"pointer",color:"var(--tx2)",fontFamily:"inherit",whiteSpace:"nowrap"}}>
-                                    \u2b07 CSV
-                                  </button>
-                                </div>
+
+                      {byDate[date].map(push=>{
+                        const pushAmt = push.entries.filter(e=>e.status!=="Failed").reduce((s,e)=>s+(e.amount||0),0);
+                        return (
+                          <div key={push.id} style={{background:"var(--wh)",border:"1px solid var(--bd)",borderRadius:6,overflow:"hidden",marginBottom:10}}>
+                            {/* Push card header */}
+                            <div style={{display:"flex",alignItems:"center",gap:12,padding:"10px 16px",background:push.totalFailed>0?"#fff5f5":"#f5fff5",borderBottom:"1px solid var(--bd)"}}>
+                              <div style={{width:8,height:8,borderRadius:"50%",background:push.totalFailed>0?"#a80000":"#107c10",flexShrink:0}}/>
+                              <div style={{minWidth:0}}>
+                                <div style={{fontSize:13,fontWeight:700,color:"var(--tx)",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{push.deductorName}</div>
+                                <div style={{fontSize:10.5,color:"var(--tx2)",marginTop:1}}>{push.tan}{push.company?" · "+push.company:""}</div>
                               </div>
-                              {/* Entry rows */}
-                              <table style={{width:"100%",borderCollapse:"collapse",fontSize:11.5}}>
-                                <thead>
-                                  <tr style={{background:"var(--sur)"}}>
-                                    {["#","Invoice No","Odoo TDS Entry","Move ID","TDS Amount","Status"].map(h=>(
-                                      <th key={h} style={{padding:"5px 10px",textAlign:"left",fontWeight:600,fontSize:10.5,color:"var(--tx2)",borderBottom:"1px solid var(--bd)",whiteSpace:"nowrap"}}>{h}</th>
-                                    ))}
-                                  </tr>
-                                </thead>
-                                <tbody>
-                                  {push.entries.map((e,i)=>(
-                                    <tr key={i} style={{borderBottom:"1px solid var(--bd)",background:e.status==="Failed"?"#fff8f8":""}}>
-                                      <td style={{padding:"5px 10px",color:"var(--tx2)",fontSize:10.5}}>{i+1}</td>
-                                      <td style={{padding:"5px 10px",fontFamily:"Consolas,monospace",fontWeight:600,color:"var(--a)"}}>{e.invoiceNo||"—"}</td>
-                                      <td style={{padding:"5px 10px",fontFamily:"Consolas,monospace",color:"#5c2d91",fontWeight:600}}>{e.odooRef||"—"}</td>
-                                      <td style={{padding:"5px 10px",fontFamily:"Consolas,monospace",fontSize:10.5,color:"var(--tx2)"}}>{e.moveId||"—"}</td>
-                                      <td style={{padding:"5px 10px",textAlign:"right",fontFamily:"Consolas,monospace",fontWeight:600,color:"#0078d4"}}>{fmt(e.amount)}</td>
-                                      <td style={{padding:"5px 10px"}}>
-                                        <span style={{background:e.status==="Posted"?"#e8f8e8":e.status==="Draft"?"#fff3cd":e.status==="Failed"?"#fde8e8":"#f3f3f3",color:e.status==="Posted"?"#107c10":e.status==="Draft"?"#8a6d00":e.status==="Failed"?"#a80000":"#605e5c",padding:"2px 8px",borderRadius:10,fontSize:10,fontWeight:600}}>
-                                          {e.status}{e.error?` — ${e.error.slice(0,40)}`:""}</span>
-                                      </td>
-                                    </tr>
-                                  ))}
-                                </tbody>
-                              </table>
+                              <div style={{marginLeft:"auto",display:"flex",gap:24,alignItems:"center",flexShrink:0}}>
+                                <div style={{textAlign:"center"}}>
+                                  <div style={{fontSize:9.5,color:"var(--tx2)",textTransform:"uppercase",letterSpacing:"0.4px",marginBottom:2}}>Time</div>
+                                  <div style={{fontSize:11.5,fontFamily:"Consolas,monospace"}}>{new Date(push.pushDate).toLocaleTimeString("en-IN",{hour:"2-digit",minute:"2-digit"})}</div>
+                                </div>
+                                <div style={{textAlign:"center"}}>
+                                  <div style={{fontSize:9.5,color:"var(--tx2)",textTransform:"uppercase",letterSpacing:"0.4px",marginBottom:2}}>Entries</div>
+                                  <div style={{fontSize:13,fontWeight:700,color:push.totalFailed>0?"#a80000":"#107c10"}}>
+                                    {push.totalCreated}{push.totalFailed>0?" / "+push.totalFailed+" failed":""}
+                                  </div>
+                                </div>
+                                <div style={{textAlign:"center"}}>
+                                  <div style={{fontSize:9.5,color:"var(--tx2)",textTransform:"uppercase",letterSpacing:"0.4px",marginBottom:2}}>TDS Pushed</div>
+                                  <div style={{fontSize:13,fontWeight:700,color:"#0078d4",fontFamily:"Consolas,monospace"}}>{fmtAmt(pushAmt)}</div>
+                                </div>
+                                <button onClick={()=>downloadCSV([push],push.tan+"_"+date)}
+                                  style={{fontSize:11,background:"var(--sur)",border:"1px solid var(--bd)",borderRadius:3,padding:"5px 12px",cursor:"pointer",color:"var(--tx)",fontFamily:"inherit",fontWeight:600}}>
+                                  Download CSV
+                                </button>
+                              </div>
                             </div>
-                          );
-                        })}
-                      </div>
+
+                            {/* Entry table */}
+                            <table style={{width:"100%",borderCollapse:"collapse",fontSize:11.5}}>
+                              <thead>
+                                <tr style={{background:"var(--sur)"}}>
+                                  {["#","Invoice No","Odoo TDS Entry","Move ID","TDS Amount","Status"].map(h=>(
+                                    <th key={h} style={{padding:"6px 12px",textAlign:h==="TDS Amount"?"right":"left",fontWeight:600,fontSize:10.5,color:"var(--tx2)",borderBottom:"1px solid var(--bd)",whiteSpace:"nowrap",userSelect:"none"}}>{h}</th>
+                                  ))}
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {push.entries.map((e,i)=>(
+                                  <tr key={i} style={{borderBottom:i<push.entries.length-1?"1px solid var(--bd)":"none",background:e.status==="Failed"?"#fff5f5":""}}>
+                                    <td style={{padding:"6px 12px",color:"var(--tx2)",fontSize:10.5,width:32}}>{i+1}</td>
+                                    <td style={{padding:"6px 12px",fontFamily:"Consolas,monospace",fontWeight:600,color:"var(--a)"}}>{e.invoiceNo||"—"}</td>
+                                    <td style={{padding:"6px 12px",fontFamily:"Consolas,monospace",color:"#5c2d91",fontWeight:600}}>{e.odooRef||"—"}</td>
+                                    <td style={{padding:"6px 12px",fontFamily:"Consolas,monospace",fontSize:10.5,color:"var(--tx2)"}}>{e.moveId||"—"}</td>
+                                    <td style={{padding:"6px 12px",textAlign:"right",fontFamily:"Consolas,monospace",fontWeight:600,color:"#0078d4"}}>{fmtAmt(e.amount)}</td>
+                                    <td style={{padding:"6px 12px"}}>
+                                      <span style={{
+                                        background:e.status==="Posted"?"#e8f8e8":e.status==="Draft"?"#fff8dc":"#fde8e8",
+                                        color:e.status==="Posted"?"#107c10":e.status==="Draft"?"#7a6000":"#a80000",
+                                        padding:"2px 8px",borderRadius:10,fontSize:10,fontWeight:700,whiteSpace:"nowrap"
+                                      }}>
+                                        {e.status}{e.error?" — "+e.error.slice(0,50):""}
+                                      </span>
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        );
+                      })}
                     </div>
                   ))}
                 </div>
