@@ -3685,6 +3685,90 @@ export default function App() {
     else { const a=document.createElement("a"); a.href=URL.createObjectURL(new Blob([csv],{type:"text/csv"})); a.download=`26AS_${selDS}_Export.csv`; a.click(); showToast(`Exported ${data.length} records`); }
   };
 
+  const downloadTabExcel = async (tabName) => {
+    const wb = XLSX.utils.book_new();
+    const companyName = curCompany?.name || 'Export';
+    const fy = selYear || '';
+
+    if (tabName === '26AS' || tabName === 'AIS') {
+      const data = datasets[tabName] || [];
+      if (!data.length) { showToast(`No ${tabName} data to download`, 'w'); return; }
+      const headers = ['#', 'Deductor Name', 'TAN', 'Section', 'Amount Paid', 'TDS Deducted', 'TDS Deposited', 'Trans. Date', 'Quarter', 'Financial Year', 'Booking Status', 'Match Status'];
+      const rows = data.map((r, i) => [
+        i + 1, r.deductorName || '', r.tan || '', r.section || '',
+        r.amountPaid || 0, r.tdsDeducted || 0, r.tdsDeposited || 0,
+        r.date || '', r.quarter || '', r.financialYear || '',
+        r.bookingStatus || '', r.matchStatus || ''
+      ]);
+      const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+      ws['!cols'] = [6, 28, 14, 10, 14, 14, 14, 12, 8, 12, 10, 14].map(w => ({ wch: w }));
+      XLSX.utils.book_append_sheet(wb, ws, tabName);
+
+    } else if (tabName === 'Books') {
+      const data = datasets['Books'] || [];
+      if (!data.length) { showToast('No Books data to download', 'w'); return; }
+      const invLookup = {};
+      (datasets['Invoices'] || []).forEach(inv => { const k = (inv.invoiceNo || '').trim().toUpperCase(); if (k) invLookup[k] = inv; });
+      const headers = ['#', 'Party Name', 'TAN', 'Section', 'Amount Paid', 'TDS Deducted', 'Invoice No.', 'Trans. Date', 'Invoice Date', 'Taxable Value', 'Amt Due', 'TDS %', 'Odoo Ref', 'Quarter', 'Match Status'];
+      const rows = data.map((r, i) => {
+        const invKey = (r.invoiceNo || '').trim().toUpperCase();
+        const inv = invLookup[invKey];
+        const taxableVal = inv?.amountUntaxed || 0;
+        const amtDue = inv?.amountDue ?? '';
+        const tdsRate = taxableVal > 0 ? ((r.tdsDeducted || 0) / taxableVal * 100) : '';
+        const refData = invKey ? (odooRefs[invKey] || null) : null;
+        const odooRef = refData ? (refData.odooRef || `ID:${refData.moveId}`) : (r.journalEntry || '');
+        return [
+          i + 1, r.deductorName || '', r.tan || '', r.section || '',
+          r.amountPaid || 0, r.tdsDeducted || 0, r.invoiceNo || '',
+          r.date || '', r.invoiceDate || '', taxableVal || '', amtDue,
+          tdsRate !== '' ? Math.round(tdsRate * 10) / 10 : '', odooRef,
+          r.quarter || '', r.matchStatus || ''
+        ];
+      });
+      const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+      ws['!cols'] = [6, 28, 14, 10, 14, 14, 16, 12, 12, 14, 12, 8, 18, 8, 14].map(w => ({ wch: w }));
+      XLSX.utils.book_append_sheet(wb, ws, 'Books');
+
+    } else if (tabName === 'Invoices') {
+      const data = datasets['Invoices'] || [];
+      if (!data.length) { showToast('No Invoice data to download', 'w'); return; }
+      const booksData = datasets['Books'] || [];
+      const headers = ['S.No.', 'Name of Client', 'Invoice No.', 'Invoice Date', 'Taxable Value', 'Amount Due', 'Booked TDS', 'TDS %', 'Status', 'Odoo Ref'];
+      const rows = data.map((inv, idx) => {
+        const invNo = (inv.invoiceNo || '').trim().toUpperCase();
+        const tdsBooked = booksData.filter(b => (b.invoiceNo || '').trim().toUpperCase() === invNo).reduce((s, b) => s + (b.tdsDeducted || 0), 0);
+        const taxableVal = inv.amountUntaxed || 0;
+        const tdsPercent = taxableVal > 0 ? ((tdsBooked / taxableVal) * 100) : 0;
+        const isExcess = tdsBooked > taxableVal * 0.105;
+        const hasNoTds = tdsBooked === 0;
+        const status = hasNoTds ? 'No TDS' : isExcess ? 'Excess' : 'OK';
+        const refData = odooRefs[invNo] || null;
+        const odooRef = refData ? (refData.odooRef || `ID:${refData.moveId}`) : '';
+        return [
+          idx + 1, inv.partnerName || '', inv.invoiceNo || '', inv.invoiceDate || '',
+          taxableVal, inv.amountDue || 0, tdsBooked,
+          tdsBooked > 0 ? Math.round(tdsPercent * 10) / 10 : '',
+          status, odooRef
+        ];
+      });
+      const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+      ws['!cols'] = [6, 28, 16, 12, 14, 14, 14, 8, 10, 18].map(w => ({ wch: w }));
+      XLSX.utils.book_append_sheet(wb, ws, 'Invoices');
+    }
+
+    const buf = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+    const blob = new Blob([buf], { type: 'application/octet-stream' });
+    const fileName = `${companyName.replace(/[^a-zA-Z0-9]/g, '_')}_${tabName}_FY${fy}.xlsx`;
+    if (isElectron) {
+      const reader = new FileReader(); reader.readAsDataURL(blob);
+      reader.onload = async () => { const b64 = reader.result.split(',')[1]; const res = await window.electronAPI.saveFile({ defaultName: fileName, content: b64, isBase64: true }); if (res.success) showToast(`Exported: ${res.path}`); };
+    } else {
+      const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = fileName; a.click();
+      showToast(`✅ ${tabName} exported — ${tabName === 'Invoices' ? (datasets['Invoices'] || []).length : (datasets[tabName] || []).length} records`, 's');
+    }
+  };
+
   const exportReconReport = async () => {
     if (!reconResults.length) { showToast("Run reconciliation first","w"); return; }
     const cols = ["id","tan","as_name","as_tds","as_deposited","as_txns","as_sections","bk_name","bk_tds","bk_txns","tds_diff","matchStatus","mismatchReason"];
@@ -5236,6 +5320,25 @@ export default function App() {
                     {searchQ&&<span onClick={()=>setSearchQ("")} style={{cursor:"pointer",color:"#999",fontSize:11}}>✕</span>}
                   </div>
                   <div className="rc">{selDS==="Invoices"?`${(datasets["Invoices"]||[]).length} invoices`:(filtered.length!==activeData.length?`${filtered.length} of ${activeData.length}`:`${activeData.length} records`)}{selRows.size>0&&` · ${selRows.size} selected`}</div>
+                  <button
+                    onClick={()=>downloadTabExcel(selDS)}
+                    disabled={selDS==="Invoices"?(datasets["Invoices"]||[]).length===0:!activeData.length}
+                    title={`Download ${selDS} as Excel`}
+                    style={{
+                      display:"flex",alignItems:"center",gap:4,
+                      padding:"3px 10px",marginLeft:4,
+                      borderRadius:3,
+                      border:"1px solid var(--bd)",
+                      background:(selDS==="Invoices"?(datasets["Invoices"]||[]).length>0:activeData.length>0)?"#e8f8e8":"var(--sur)",
+                      color:(selDS==="Invoices"?(datasets["Invoices"]||[]).length>0:activeData.length>0)?"#107c10":"var(--tx3)",
+                      cursor:(selDS==="Invoices"?(datasets["Invoices"]||[]).length>0:activeData.length>0)?"pointer":"not-allowed",
+                      fontSize:11.5,fontFamily:"inherit",fontWeight:600,
+                      transition:"all 0.15s"
+                    }}
+                  >
+                    <Ic d={I.download} s={12} c={(selDS==="Invoices"?(datasets["Invoices"]||[]).length>0:activeData.length>0)?"#107c10":"#ccc"}/>
+                    Excel
+                  </button>
                   {selDS==="Books"&&dupInvoiceNos.size>0&&(
                     <button
                       onClick={()=>setShowDupOnly(p=>!p)}
