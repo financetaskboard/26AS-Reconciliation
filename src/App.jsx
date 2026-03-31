@@ -1043,7 +1043,10 @@ Log saved - check Push Log tab`
           <div className="modal-pane">
             <div className="modal-ph bk" style={{background:"#e8f8e8"}}>
               <span>📗 Books Transactions <span style={{fontWeight:400,fontSize:10,opacity:0.8}}>— select first</span></span>
-              <span style={{fontWeight:400}}>{bk.length} entries · TDS: <b style={{color:"#0a6a0a"}}>₹{bkTDS.toLocaleString("en-IN",{minimumFractionDigits:2})}</b></span>
+              <span style={{fontWeight:400,display:"flex",alignItems:"center",gap:8}}>
+                {(()=>{const dupSet=new Set();bk.forEach(r=>{const k=(r.invoiceNo||"").trim().toUpperCase();if(k&&bk.filter(x=>(x.invoiceNo||"").trim().toUpperCase()===k).length>1)dupSet.add(k);});return dupSet.size>0?<span style={{fontSize:10,fontWeight:700,padding:"1px 6px",borderRadius:3,background:"#d59300",color:"#fff"}}>⚠ {dupSet.size} dup inv</span>:null;})()}
+                {bk.length} entries · TDS: <b style={{color:"#0a6a0a"}}>₹{bkTDS.toLocaleString("en-IN",{minimumFractionDigits:2})}</b>
+              </span>
             </div>
             <div className="modal-scroll">
               {bk.length===0
@@ -1055,12 +1058,15 @@ Log saved - check Push Log tab`
                       const grp = getGroupForBk(r.id);
                       const isPendingSel = selBk.has(r.id);
                       const ci = grp ? (grp.groupNo-1) % PAIR_COLORS.length : -1;
-                      const rowBg     = grp ? PAIR_COLORS[ci] : isPendingSel ? "#fffbe6" : "transparent";
-                      const rowOutline = grp ? `2px solid ${PAIR_BORDER[ci]}` : isPendingSel ? "2px solid #d59300" : "2px solid transparent";
+                      // Duplicate detection within this TAN's Books rows
+                      const invKey = (r.invoiceNo||"").trim().toUpperCase();
+                      const isDupInv = invKey && bk.filter(x=>(x.invoiceNo||"").trim().toUpperCase()===invKey).length > 1;
+                      const rowBg     = grp ? PAIR_COLORS[ci] : isPendingSel ? "#fffbe6" : isDupInv ? "#fff8e8" : "transparent";
+                      const rowOutline = grp ? `2px solid ${PAIR_BORDER[ci]}` : isPendingSel ? "2px solid #d59300" : isDupInv ? "2px solid #f0c040" : "2px solid transparent";
                       return (
                         <tr key={r.id} onClick={()=>handleBkClick(r.id)}
                           style={{cursor:"pointer",background:rowBg,outline:rowOutline,outlineOffset:"-2px"}}
-                          title={grp?"Click to remove from group":isPendingSel?"Click to deselect":"Click to select"}>
+                          title={grp?"Click to remove from group":isPendingSel?"Click to deselect":isDupInv?"Duplicate invoice number — click to select":"Click to select"}>
                           <td style={{width:24,textAlign:"center"}}>
                             {grp
                               ? <span style={{display:"inline-block",width:18,height:18,borderRadius:9,background:PAIR_BORDER[ci],color:"#fff",fontSize:9,fontWeight:700,lineHeight:"18px",textAlign:"center"}}>✓{grp.groupNo}</span>
@@ -1070,7 +1076,12 @@ Log saved - check Push Log tab`
                           </td>
                           <td style={{color:"#aaa"}}>{i+1}</td>
                           <td style={{fontFamily:"Consolas,monospace",fontSize:11}} title={r.date?`Txn: ${r.date}`:""}>{r.invoiceDate||r.date||"—"}</td>
-                          <td style={{color:"var(--a)",fontSize:11,maxWidth:150,overflow:"hidden",textOverflow:"ellipsis"}} title={r.invoiceNo}>{r.invoiceNo||"—"}</td>
+                          <td style={{fontSize:11,maxWidth:150,overflow:"hidden",textOverflow:"ellipsis"}} title={r.invoiceNo}>
+                            <span style={{display:"flex",alignItems:"center",gap:4}}>
+                              <span style={{color:"var(--a)",overflow:"hidden",textOverflow:"ellipsis"}}>{r.invoiceNo||"—"}</span>
+                              {isDupInv&&<span style={{flexShrink:0,fontSize:8,fontWeight:700,padding:"1px 4px",borderRadius:2,background:"#d59300",color:"#fff",letterSpacing:0.3}}>DUP</span>}
+                            </span>
+                          </td>
                           <td>{r.section?<span className="tg tg-sec">{r.section}</span>:"—"}</td>
                           <td>{r.quarter?<span className="tg tg-q">{r.quarter}</span>:"—"}</td>
                           <td style={{textAlign:"right",fontFamily:"Consolas,monospace",fontSize:11,color:"var(--grn)",fontWeight:600}}>{fmt(r.tdsDeducted)}</td>
@@ -1480,6 +1491,7 @@ export default function App() {
   const [selDS, setSelDS] = useState("26AS");
   const [searchQ, setSearchQ] = useState("");
   const [invStatusFilter, setInvStatusFilter] = useState("all"); // all, ok, excess, notds
+  const [showDupOnly, setShowDupOnly] = useState(false);
   const [invTdsDetailPopup, setInvTdsDetailPopup] = useState(null); // { invoiceNo, entries, total }
   const [odooRefs, setOdooRefs] = useState({}); // { [invoiceNo]: { odooRef, moveId, createdAt } }
   const [sortCol, setSortCol] = useState("id");
@@ -3702,7 +3714,24 @@ export default function App() {
   };
 
   const activeData = datasets[selDS]||[];
-  const filtered = activeData.filter(r=>!searchQ||Object.values(r).some(v=>String(v).toLowerCase().includes(searchQ.toLowerCase())));
+  // Compute duplicate invoice numbers for Books tab
+  const dupInvoiceNos = (() => {
+    if (selDS !== "Books") return new Set();
+    const counts = {};
+    (datasets["Books"]||[]).forEach(r => {
+      const inv = (r.invoiceNo||"").trim().toUpperCase();
+      if (!inv) return;
+      counts[inv] = (counts[inv]||0) + 1;
+    });
+    return new Set(Object.keys(counts).filter(k => counts[k] > 1));
+  })();
+  const filtered = activeData.filter(r=>{
+    if (showDupOnly && selDS === "Books") {
+      const inv = (r.invoiceNo||"").trim().toUpperCase();
+      if (!inv || !dupInvoiceNos.has(inv)) return false;
+    }
+    return !searchQ||Object.values(r).some(v=>String(v).toLowerCase().includes(searchQ.toLowerCase()));
+  });
   const sortedData = [...filtered].sort((a,b)=>{const va=a[sortCol]??"";const vb=b[sortCol]??"";const c=typeof va==="number"?va-vb:String(va).localeCompare(String(vb));return sortDir==="asc"?c:-c;});
   const toggleSort = col=>{if(sortCol===col)setSortDir(d=>d==="asc"?"desc":"asc");else{setSortCol(col);setSortDir("asc");}};
   const toggleRow = id=>setSelRows(p=>{const s=new Set(p);s.has(id)?s.delete(id):s.add(id);return s;});
@@ -5185,7 +5214,7 @@ export default function App() {
                 <div className="dvtb">
                   <div className="dstabs">
                     {["26AS","AIS","Books","Invoices"].map(ds=>(
-                      <div key={ds} className={`dst${selDS===ds?" on":""}`} onClick={()=>{setSelDS(ds);setSelRows(new Set());setSearchQ("");}}>
+                      <div key={ds} className={`dst${selDS===ds?" on":""}`} onClick={()=>{setSelDS(ds);setSelRows(new Set());setSearchQ("");setShowDupOnly(false);}}>
                         {ds} ({ds==="Invoices"?(datasets["Invoices"]||[]).length:datasets[ds].length})
                       </div>
                     ))}
@@ -5196,6 +5225,30 @@ export default function App() {
                     {searchQ&&<span onClick={()=>setSearchQ("")} style={{cursor:"pointer",color:"#999",fontSize:11}}>✕</span>}
                   </div>
                   <div className="rc">{selDS==="Invoices"?`${(datasets["Invoices"]||[]).length} invoices`:(filtered.length!==activeData.length?`${filtered.length} of ${activeData.length}`:`${activeData.length} records`)}{selRows.size>0&&` · ${selRows.size} selected`}</div>
+                  {selDS==="Books"&&dupInvoiceNos.size>0&&(
+                    <button
+                      onClick={()=>setShowDupOnly(p=>!p)}
+                      style={{
+                        marginLeft:6,
+                        display:"flex",alignItems:"center",gap:5,
+                        padding:"3px 10px",
+                        borderRadius:3,
+                        border:`1px solid ${showDupOnly?"#d59300":"var(--bd)"}`,
+                        background:showDupOnly?"#fff4e0":"var(--sur)",
+                        color:showDupOnly?"#835b00":"var(--tx2)",
+                        cursor:"pointer",fontSize:11.5,fontFamily:"inherit",fontWeight:600,
+                        transition:"all 0.15s"
+                      }}
+                    >
+                      <span style={{fontSize:12}}>⚠</span>
+                      Duplicates
+                      <span style={{
+                        background:showDupOnly?"#d59300":"#aaa",
+                        color:"#fff",borderRadius:9,
+                        padding:"1px 6px",fontSize:10,fontWeight:700
+                      }}>{dupInvoiceNos.size}</span>
+                    </button>
+                  )}
                 </div>
                 {selDS==="Invoices"?(
                   (datasets["Invoices"]||[]).length===0?(
@@ -5291,8 +5344,11 @@ export default function App() {
                           {[{k:"id",l:"#",w:42},{k:"deductorName",l:selDS==="Books"?"Party Name":"Deductor Name",w:200},{k:"tan",l:"TAN",w:110},{k:"section",l:"Section",w:80},{k:"amountPaid",l:"Amount Paid",w:120},{k:"tdsDeducted",l:"TDS Deducted",w:118},{k:"tdsDeposited",l:"TDS Deposited",w:118,skip:selDS==="Books"},{k:"invoiceNo",l:"Invoice No.",w:112,skip:selDS!=="Books"},{k:"date",l:"Trans. Date",w:96},{k:"invoiceDate",l:"Invoice Date",w:96,skip:selDS!=="Books"},{k:"quarter",l:"Qtr",w:55},{k:"financialYear",l:"F.Y.",w:76,skip:selDS==="Books"},{k:"bookingStatus",l:"B.Status",w:65,skip:selDS==="Books"},{k:"matchStatus",l:"Match",w:95}].filter(c=>!c.skip).map(c=><th key={c.k} style={{width:c.w,minWidth:c.w}} className={sortCol===c.k?"srt":""} onClick={()=>toggleSort(c.k)}>{c.l}{sortCol===c.k?(sortDir==="asc"?" ↑":" ↓"):""}</th>)}
                         </tr></thead>
                         <tbody>
-                          {sortedData.map(row=>(
-                            <tr key={row.id} className={selRows.has(row.id)?"sel":""} onClick={()=>toggleRow(row.id)}>
+                          {sortedData.map(row=>{
+                            const isDup = selDS==="Books" && !!((row.invoiceNo||"").trim()) && dupInvoiceNos.has((row.invoiceNo||"").trim().toUpperCase());
+                            return (
+                            <tr key={row.id} className={selRows.has(row.id)?"sel":""} onClick={()=>toggleRow(row.id)}
+                              style={isDup&&!selRows.has(row.id)?{background:"#fff8e8"}:{}}>
                               <td><input type="checkbox" className="cb3" checked={selRows.has(row.id)} onChange={()=>toggleRow(row.id)} onClick={e=>e.stopPropagation()}/></td>
                               <td style={{color:"#aaa"}}>{row.id}</td>
                               <td title={row.deductorName} style={{fontWeight:500}}>{row.deductorName||"—"}</td>
@@ -5301,14 +5357,24 @@ export default function App() {
                               <td className="num">{fmt(row.amountPaid)}</td>
                               <td className="num" style={{color:"#a80000"}}>{fmt(row.tdsDeducted)}</td>
                               {selDS!=="Books"&&<td className="num" style={{color:"var(--grn)"}}>{fmt(row.tdsDeposited)}</td>}
-                              {selDS==="Books"&&<td style={{color:"var(--tx2)"}}>{row.invoiceNo||"—"}</td>}
+                              {selDS==="Books"&&<td style={{color:"var(--tx2)"}}>
+                                <span style={{display:"flex",alignItems:"center",gap:4}}>
+                                  <span>{row.invoiceNo||"—"}</span>
+                                  {isDup&&<span title="Duplicate invoice number" style={{
+                                    fontSize:9,fontWeight:700,padding:"1px 5px",
+                                    borderRadius:3,background:"#d59300",color:"#fff",
+                                    flexShrink:0,letterSpacing:0.3
+                                  }}>DUP</span>}
+                                </span>
+                              </td>}
                               <td style={{color:"var(--tx2)"}}>{row.date||"—"}</td>
                               {selDS==="Books"&&<td style={{color:"var(--grn)",fontWeight:600}}>{row.invoiceDate||"—"}</td>}
                               <td>{row.quarter?<span className="tg tg-q">{row.quarter}</span>:"—"}</td>
                               {selDS!=="Books"&&<><td>{row.financialYear||"—"}</td><td><span style={{fontFamily:"Consolas,monospace",fontSize:10,color:row.bookingStatus==="F"?"var(--grn)":"var(--amb)"}}>{row.bookingStatus||"—"}</span></td></>}
                               <td><span className={`tg ${row.matchStatus==="Matched"?"tg-m":row.matchStatus==="Mismatch"?"tg-mm":"tg-um"}`}>{row.matchStatus}</span></td>
                             </tr>
-                          ))}
+                            );
+                          })}
                         </tbody>
                       </table>
                     </div>
@@ -5317,6 +5383,13 @@ export default function App() {
                       <div className="si">Total Amount: <span className="sv2">₹{totalAmt.toLocaleString("en-IN",{minimumFractionDigits:2})}</span></div>
                       <div className="si">Total TDS: <span className="sv2" style={{color:"#a80000"}}>₹{totalTDS.toLocaleString("en-IN",{minimumFractionDigits:2})}</span></div>
                       <div className="si">Unmatched: <span className="sv2" style={{color:"#a80000"}}>{activeData.filter(r=>r.matchStatus==="Unmatched").length}</span></div>
+                      {selDS==="Books"&&dupInvoiceNos.size>0&&(
+                        <div className="si" style={{cursor:"pointer",borderLeft:"2px solid #d59300",paddingLeft:8}} onClick={()=>setShowDupOnly(p=>!p)} title="Click to toggle duplicate filter">
+                          ⚠ Dup. Invoices: <span className="sv2" style={{color:"#d59300",fontWeight:700}}>
+                            {dupInvoiceNos.size} inv · {activeData.filter(r=>dupInvoiceNos.has((r.invoiceNo||"").trim().toUpperCase())).length} rows
+                          </span>
+                        </div>
+                      )}
                     </div>
                   </>
                 )}
@@ -6748,7 +6821,7 @@ export default function App() {
             const sortedDates = Object.keys(byDate).sort((a,b)=>b.localeCompare(a));
 
             return (
-              <div style={{flex:1,overflow:"auto",display:"flex",flexDirection:"column",minHeight:0}}>
+              <div style={{flex:1,overflow:"hidden",display:"flex",flexDirection:"column",minHeight:0}}>
 
                 {/* Stats bar */}
                 <div style={{background:"var(--wh)",borderBottom:"1px solid var(--bd)",padding:"12px 24px",display:"flex",alignItems:"stretch",flexShrink:0}}>
@@ -6781,8 +6854,6 @@ export default function App() {
 
                 {/* Filter + Period + Search bar */}
                 <div style={{background:"var(--wh)",borderBottom:"1px solid var(--bd)",padding:"8px 24px",display:"flex",alignItems:"center",gap:10,flexWrap:"wrap",flexShrink:0}}>
-
-                  {/* Period selector */}
                   <div style={{display:"flex",alignItems:"center",gap:6}}>
                     <span style={{fontSize:11,fontWeight:600,color:"var(--tx2)",textTransform:"uppercase",letterSpacing:"0.4px"}}>Period</span>
                     <select value={odooLogPeriod} onChange={e=>setOdooLogPeriod(e.target.value)}
@@ -6794,10 +6865,7 @@ export default function App() {
                       )}
                     </select>
                   </div>
-
                   <div style={{width:1,height:20,background:"var(--bd)",margin:"0 4px"}}/>
-
-                  {/* Status filter */}
                   {[["All","All"],["AllPosted","No Failures"],["HasFailed","Has Failures"]].map(([k,l])=>(
                     <button key={k} onClick={()=>setOdooLogFilter(k)}
                       style={{background:odooLogFilter===k?"var(--a)":"none",color:odooLogFilter===k?"#fff":"var(--tx2)",
@@ -6806,120 +6874,74 @@ export default function App() {
                       {l}
                     </button>
                   ))}
-
-                  {/* Search */}
                   <div style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:8}}>
-                    <div style={{display:"flex",alignItems:"center",gap:6,background:"var(--sur)",borderRadius:3,padding:"5px 10px",border:"1px solid var(--bd)"}}>
-                      <svg width="12" height="12" viewBox="0 0 16 16" fill="none"><circle cx="6" cy="6" r="5" stroke="#888" strokeWidth="1.5"/><path d="M10 10l4 4" stroke="#888" strokeWidth="1.5" strokeLinecap="round"/></svg>
+                    <div style={{display:"flex",alignItems:"center",gap:6,border:"1px solid var(--bd)",borderRadius:3,padding:"4px 8px",background:"var(--sur)"}}>
+                      <span style={{fontSize:12,color:"#aaa"}}>🔍</span>
                       <input placeholder="Search TAN, deductor, company..." value={odooLogSearch}
                         onChange={e=>setOdooLogSearch(e.target.value)}
-                        style={{border:"none",background:"none",outline:"none",fontSize:12,fontFamily:"inherit",width:220,color:"var(--tx)"}}/>
-                      {odooLogSearch&&<span onClick={()=>setOdooLogSearch("")} style={{cursor:"pointer",color:"#aaa",fontSize:12,lineHeight:1}}>x</span>}
+                        style={{border:"none",outline:"none",background:"transparent",fontSize:12,fontFamily:"inherit",width:220,color:"var(--tx)"}}/>
+                      {odooLogSearch&&<span onClick={()=>setOdooLogSearch("")} style={{cursor:"pointer",color:"#aaa",fontSize:12,lineHeight:1}}>✕</span>}
                     </div>
                     <span style={{fontSize:11.5,color:"var(--tx2)",whiteSpace:"nowrap"}}>{filtered.length} push{filtered.length!==1?"es":""}</span>
                   </div>
                 </div>
 
-                {/* Content area */}
-                <div style={{flex:1,overflow:"auto",padding:"16px 24px",display:"flex",flexDirection:"column",gap:16}}>
-
-                  {!odooLog.length && (
+                {/* Flat table */}
+                <div style={{flex:1,overflow:"auto"}}>
+                  {!odooLog.length ? (
                     <div style={{margin:"80px auto",textAlign:"center",color:"var(--tx2)"}}>
-                      <div style={{fontSize:40,marginBottom:12}}>&#128228;</div>
+                      <div style={{fontSize:40,marginBottom:12}}>📤</div>
                       <div style={{fontSize:14,fontWeight:600,marginBottom:6,color:"var(--tx)"}}>No push log entries yet</div>
                       <div style={{fontSize:12}}>Push journal entries to Odoo from the Reconciliation tab to see logs here.</div>
                     </div>
-                  )}
-
-                  {odooLog.length>0 && filtered.length===0 && (
+                  ) : filtered.length===0 ? (
                     <div style={{margin:"80px auto",textAlign:"center",color:"var(--tx2)"}}>
-                      <div style={{fontSize:32,marginBottom:10}}>&#128269;</div>
+                      <div style={{fontSize:32,marginBottom:10}}>🔍</div>
                       <div style={{fontSize:13,fontWeight:600,marginBottom:4,color:"var(--tx)"}}>No results</div>
                       <div style={{fontSize:11.5}}>Try changing the period or filters.</div>
                     </div>
-                  )}
-
-                  {sortedDates.map(date=>(
-                    <div key={date}>
-                      {/* Date group header */}
-                      <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:10}}>
-                        <div style={{fontSize:11,fontWeight:700,color:"var(--a)",textTransform:"uppercase",letterSpacing:"0.8px",whiteSpace:"nowrap"}}>{fmtD(date)}</div>
-                        <div style={{flex:1,height:1,background:"var(--bd)"}}/>
-                        <span style={{fontSize:11,color:"var(--tx2)"}}>{byDate[date].length} push{byDate[date].length!==1?"es":""}</span>
-                        <button onClick={()=>downloadCSV(byDate[date],date)}
-                          style={{fontSize:11,background:"none",border:"1px solid var(--bd)",borderRadius:3,padding:"3px 10px",cursor:"pointer",color:"var(--tx2)",fontFamily:"inherit",whiteSpace:"nowrap"}}>
-                          Download {date}
-                        </button>
-                      </div>
-
-                      {byDate[date].map(push=>{
-                        const pushAmt = push.entries.filter(e=>e.status!=="Failed").reduce((s,e)=>s+(e.amount||0),0);
-                        return (
-                          <div key={push.id} style={{background:"var(--wh)",border:"1px solid var(--bd)",borderRadius:6,overflow:"hidden",marginBottom:10}}>
-                            {/* Push card header */}
-                            <div style={{display:"flex",alignItems:"center",gap:12,padding:"10px 16px",background:push.totalFailed>0?"#fff5f5":"#f5fff5",borderBottom:"1px solid var(--bd)"}}>
-                              <div style={{width:8,height:8,borderRadius:"50%",background:push.totalFailed>0?"#a80000":"#107c10",flexShrink:0}}/>
-                              <div style={{minWidth:0}}>
-                                <div style={{fontSize:13,fontWeight:700,color:"var(--tx)",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{push.deductorName}</div>
-                                <div style={{fontSize:10.5,color:"var(--tx2)",marginTop:1}}>{push.tan}{push.company?" · "+push.company:""}</div>
-                              </div>
-                              <div style={{marginLeft:"auto",display:"flex",gap:24,alignItems:"center",flexShrink:0}}>
-                                <div style={{textAlign:"center"}}>
-                                  <div style={{fontSize:9.5,color:"var(--tx2)",textTransform:"uppercase",letterSpacing:"0.4px",marginBottom:2}}>Time</div>
-                                  <div style={{fontSize:11.5,fontFamily:"Consolas,monospace"}}>{new Date(push.pushDate).toLocaleTimeString("en-IN",{hour:"2-digit",minute:"2-digit"})}</div>
-                                </div>
-                                <div style={{textAlign:"center"}}>
-                                  <div style={{fontSize:9.5,color:"var(--tx2)",textTransform:"uppercase",letterSpacing:"0.4px",marginBottom:2}}>Entries</div>
-                                  <div style={{fontSize:13,fontWeight:700,color:push.totalFailed>0?"#a80000":"#107c10"}}>
-                                    {push.totalCreated}{push.totalFailed>0?" / "+push.totalFailed+" failed":""}
-                                  </div>
-                                </div>
-                                <div style={{textAlign:"center"}}>
-                                  <div style={{fontSize:9.5,color:"var(--tx2)",textTransform:"uppercase",letterSpacing:"0.4px",marginBottom:2}}>TDS Pushed</div>
-                                  <div style={{fontSize:13,fontWeight:700,color:"#0078d4",fontFamily:"Consolas,monospace"}}>{fmtAmt(pushAmt)}</div>
-                                </div>
-                                <button onClick={()=>downloadCSV([push],push.tan+"_"+date)}
-                                  style={{fontSize:11,background:"var(--sur)",border:"1px solid var(--bd)",borderRadius:3,padding:"5px 12px",cursor:"pointer",color:"var(--tx)",fontFamily:"inherit",fontWeight:600}}>
-                                  Download CSV
-                                </button>
-                              </div>
-                            </div>
-
-                            {/* Entry table */}
-                            <table style={{width:"100%",borderCollapse:"collapse",fontSize:11.5}}>
-                              <thead>
-                                <tr style={{background:"var(--sur)"}}>
-                                  {["#","Invoice No","Odoo TDS Entry","Move ID","TDS Amount","Status"].map(h=>(
-                                    <th key={h} style={{padding:"6px 12px",textAlign:h==="TDS Amount"?"right":"left",fontWeight:600,fontSize:10.5,color:"var(--tx2)",borderBottom:"1px solid var(--bd)",whiteSpace:"nowrap",userSelect:"none"}}>{h}</th>
-                                  ))}
+                  ) : (
+                    <table style={{width:"100%",borderCollapse:"collapse",fontSize:12}}>
+                      <thead>
+                        <tr style={{background:"var(--hb)",position:"sticky",top:0,zIndex:2}}>
+                          {["Push Date","TAN","Deductor","Company","Invoice No","Odoo TDS Entry","Move ID","TDS Amount","Status"].map(h=>(
+                            <th key={h} style={{padding:"8px 12px",textAlign:h==="TDS Amount"?"right":"left",fontWeight:600,fontSize:11,color:"var(--tx2)",borderBottom:"2px solid var(--bd)",whiteSpace:"nowrap",userSelect:"none",letterSpacing:"0.3px"}}>{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {sortedDates.map(date=>
+                          byDate[date].map(push=>
+                            push.entries.map((e,i)=>{
+                              const isFirst = i===0;
+                              const rowspan = push.entries.length;
+                              return (
+                                <tr key={push.id+"-"+i} style={{borderBottom:"1px solid #f0f0f0",background:e.status==="Failed"?"#fff5f5":i%2===0?"var(--wh)":"var(--sur)"}}>
+                                  {isFirst&&<td rowSpan={rowspan} style={{padding:"7px 12px",verticalAlign:"top",fontFamily:"Consolas,monospace",fontSize:11,color:"var(--a)",whiteSpace:"nowrap",fontWeight:600,borderRight:"1px solid var(--bd)",background:"var(--sur)"}}>{fmtD(date)}</td>}
+                                  {isFirst&&<td rowSpan={rowspan} style={{padding:"7px 12px",verticalAlign:"top",fontFamily:"Consolas,monospace",fontSize:11,color:"var(--a)",whiteSpace:"nowrap",borderRight:"1px solid var(--bd)",background:"var(--sur)"}}>{push.tan}</td>}
+                                  {isFirst&&<td rowSpan={rowspan} style={{padding:"7px 12px",verticalAlign:"top",fontWeight:600,fontSize:12,color:"var(--tx)",borderRight:"1px solid var(--bd)",background:"var(--sur)",minWidth:140}}>{push.deductorName||"—"}</td>}
+                                  {isFirst&&<td rowSpan={rowspan} style={{padding:"7px 12px",verticalAlign:"top",fontSize:11,color:"var(--tx2)",borderRight:"1px solid var(--bd)",background:"var(--sur)",whiteSpace:"nowrap"}}>{push.company||"—"}</td>}
+                                  <td style={{padding:"7px 12px",fontFamily:"Consolas,monospace",fontWeight:600,color:"var(--a)",whiteSpace:"nowrap"}}>{e.invoiceNo||"—"}</td>
+                                  <td style={{padding:"7px 12px",fontFamily:"Consolas,monospace",color:"#5c2d91",fontWeight:600,whiteSpace:"nowrap"}}>{e.odooRef||"—"}</td>
+                                  <td style={{padding:"7px 12px",fontFamily:"Consolas,monospace",fontSize:11,color:"var(--tx2)",whiteSpace:"nowrap"}}>{e.moveId||"—"}</td>
+                                  <td style={{padding:"7px 12px",textAlign:"right",fontFamily:"Consolas,monospace",fontWeight:600,color:"#0078d4",whiteSpace:"nowrap"}}>{fmtAmt(e.amount)}</td>
+                                  <td style={{padding:"7px 12px"}}>
+                                    <span style={{
+                                      background:e.status==="Posted"?"#e8f8e8":e.status==="Draft"?"#fff8dc":"#fde8e8",
+                                      color:e.status==="Posted"?"#107c10":e.status==="Draft"?"#7a6000":"#a80000",
+                                      padding:"2px 8px",borderRadius:10,fontSize:10,fontWeight:700,whiteSpace:"nowrap"
+                                    }}>
+                                      {e.status}{e.error?" — "+e.error.slice(0,40):""}
+                                    </span>
+                                  </td>
                                 </tr>
-                              </thead>
-                              <tbody>
-                                {push.entries.map((e,i)=>(
-                                  <tr key={i} style={{borderBottom:i<push.entries.length-1?"1px solid var(--bd)":"none",background:e.status==="Failed"?"#fff5f5":""}}>
-                                    <td style={{padding:"6px 12px",color:"var(--tx2)",fontSize:10.5,width:32}}>{i+1}</td>
-                                    <td style={{padding:"6px 12px",fontFamily:"Consolas,monospace",fontWeight:600,color:"var(--a)"}}>{e.invoiceNo||"—"}</td>
-                                    <td style={{padding:"6px 12px",fontFamily:"Consolas,monospace",color:"#5c2d91",fontWeight:600}}>{e.odooRef||"—"}</td>
-                                    <td style={{padding:"6px 12px",fontFamily:"Consolas,monospace",fontSize:10.5,color:"var(--tx2)"}}>{e.moveId||"—"}</td>
-                                    <td style={{padding:"6px 12px",textAlign:"right",fontFamily:"Consolas,monospace",fontWeight:600,color:"#0078d4"}}>{fmtAmt(e.amount)}</td>
-                                    <td style={{padding:"6px 12px"}}>
-                                      <span style={{
-                                        background:e.status==="Posted"?"#e8f8e8":e.status==="Draft"?"#fff8dc":"#fde8e8",
-                                        color:e.status==="Posted"?"#107c10":e.status==="Draft"?"#7a6000":"#a80000",
-                                        padding:"2px 8px",borderRadius:10,fontSize:10,fontWeight:700,whiteSpace:"nowrap"
-                                      }}>
-                                        {e.status}{e.error?" — "+e.error.slice(0,50):""}
-                                      </span>
-                                    </td>
-                                  </tr>
-                                ))}
-                              </tbody>
-                            </table>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  ))}
+                              );
+                            })
+                          )
+                        )}
+                      </tbody>
+                    </table>
+                  )}
                 </div>
               </div>
             );
