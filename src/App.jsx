@@ -848,15 +848,15 @@ function copyInv(invNo, btn) {
       return;
     }
 
-    const today = new Date().toISOString().slice(0, 10);
-    
     // Build entries array with partner info from invoice data
     const entries = [];
     unbooked.forEach((r) => {
       const tdsAmt = r.tdsDeposited || r.tdsDeducted || 0;
       const invoiceNoStr = (invoiceLinks[r.id] || r.invoiceNo || '').trim();
       const invNos = invoiceNoStr.split(',').map(s => s.trim()).filter(Boolean);
-      
+      // Use the 26AS transaction date (when TDS was actually deposited/deducted)
+      const entryDate = r.date || new Date().toISOString().slice(0, 10);
+
       if (invNos.length <= 1) {
         // Get partner from invoice if available
         const inv = txnsInvoices?.find(i => (i.invoiceNo||'').trim().toUpperCase() === invoiceNoStr.toUpperCase());
@@ -865,11 +865,11 @@ function copyInv(invNo, btn) {
         const odooPartnerIdFromInv = inv?.odooPartnerId || inv?.partnerId || null;
         // Priority: 1. TAN Master partnerId, 2. Invoice partnerId, 3. name lookup
         const finalPartnerId = tanMasterPartnerId || odooPartnerIdFromInv || null;
-        console.log(`[pushToOdoo] Using partner: name="${partnerFromInv || deductorName}", odooPartnerId=${finalPartnerId} (tanMaster: ${tanMasterPartnerId}, inv: ${odooPartnerIdFromInv})`);
+        console.log(`[pushToOdoo] Using partner: name="${partnerFromInv || deductorName}", odooPartnerId=${finalPartnerId} (tanMaster: ${tanMasterPartnerId}, inv: ${odooPartnerIdFromInv}), date=${entryDate}`);
         entries.push({ 
           invoiceNo: invoiceNoStr, 
           amount: tdsAmt, 
-          date: today, 
+          date: entryDate, 
           partnerName: partnerFromInv || deductorName,
           odooPartnerId: finalPartnerId,
           tan 
@@ -889,7 +889,7 @@ function copyInv(invNo, btn) {
           entries.push({ 
             invoiceNo: inv.invNo, 
             amount: splitTds, 
-            date: today, 
+            date: entryDate, 
             partnerName: inv.partnerName || deductorName,
             odooPartnerId: finalPartnerId,
             tan 
