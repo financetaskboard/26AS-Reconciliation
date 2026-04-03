@@ -851,19 +851,40 @@ function copyInv(invNo, btn) {
     const today = new Date().toISOString().slice(0, 10);
 
     // ── Normalize 26AS date (DD-Mon-YYYY) → YYYY-MM-DD for Odoo ──
+    // CRITICAL: Odoo requires exactly YYYY-MM-DD. 26AS dates come as DD-Mon-YYYY
+    // (e.g. "30-Dec-2025"). Some 26AS files have truncated years (e.g. "30-Dec-202")
+    // which the old regex (\d{2,4}) accepted, producing invalid dates like "202-12-30".
     const normalizeDateForOdoo = (dateStr) => {
       if (!dateStr) return today;
-      if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr.trim())) return dateStr.trim();
+      const trimmed = dateStr.trim();
+      // Already in YYYY-MM-DD format
+      if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return trimmed;
       const MON = { jan:1,feb:2,mar:3,apr:4,may:5,jun:6,jul:7,aug:8,sep:9,oct:10,nov:11,dec:12 };
-      const m = dateStr.trim().match(/^(\d{1,2})-([A-Za-z]{3})-(\d{2,4})$/);
-      if (m) {
-        const month = MON[m[2].toLowerCase()];
-        let year = parseInt(m[3]);
-        if (year < 100) year += 2000;
-        if (month) return `${year}-${String(month).padStart(2,'0')}-${String(m[1]).padStart(2,'0')}`;
+      // DD-Mon-YYYY — require EXACTLY 4-digit year (e.g. 30-Dec-2025)
+      const m4 = trimmed.match(/^(\d{1,2})-([A-Za-z]{3})-(\d{4})$/);
+      if (m4) {
+        const month = MON[m4[2].toLowerCase()];
+        if (month) return `${parseInt(m4[3])}-${String(month).padStart(2,'0')}-${String(m4[1]).padStart(2,'0')}`;
       }
-      const d = new Date(dateStr);
-      if (!isNaN(d)) return d.toISOString().slice(0, 10);
+      // DD-Mon-YY — exactly 2-digit year (e.g. 30-Dec-25 → 2025)
+      const m2 = trimmed.match(/^(\d{1,2})-([A-Za-z]{3})-(\d{2})$/);
+      if (m2) {
+        const month = MON[m2[2].toLowerCase()];
+        if (month) return `${parseInt(m2[3]) + 2000}-${String(month).padStart(2,'0')}-${String(m2[1]).padStart(2,'0')}`;
+      }
+      // DD/MM/YYYY or DD-MM-YYYY (numeric month)
+      const mNum = trimmed.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
+      if (mNum) return `${mNum[3]}-${String(mNum[2]).padStart(2,'0')}-${String(mNum[1]).padStart(2,'0')}`;
+      // YYYY/MM/DD
+      const mISO = trimmed.match(/^(\d{4})[\/](\d{1,2})[\/](\d{1,2})$/);
+      if (mISO) return `${mISO[1]}-${String(mISO[2]).padStart(2,'0')}-${String(mISO[3]).padStart(2,'0')}`;
+      // Fallback: JS Date constructor (reject results with year < 1900 or > 2100)
+      try {
+        const d = new Date(trimmed);
+        if (!isNaN(d) && d.getFullYear() >= 1900 && d.getFullYear() <= 2100) return d.toISOString().slice(0, 10);
+      } catch(e) {}
+      // Final safety net — log warning and use today so Odoo never gets a malformed date
+      console.warn('[normalizeDateForOdoo] Could not parse date, falling back to today:', trimmed);
       return today;
     };
 
@@ -920,6 +941,16 @@ function copyInv(invNo, btn) {
     if (!window.confirm(`Push ${entries.length} journal entries to Odoo?\n\nDeductor: ${deductorName || tan}\n\nEntries:\n${entries.slice(0,5).map(e => `• ${e.invoiceNo}: ₹${e.amount.toLocaleString('en-IN')}`).join('\n')}${entries.length > 5 ? `\n... and ${entries.length - 5} more` : ''}`)) {
       return;
     }
+
+    // ── SAFETY: Validate ALL entry dates are strict YYYY-MM-DD before sending ──
+    // This catches any edge case the normalizer missed (truncated years, weird formats)
+    const VALID_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+    entries.forEach(e => {
+      if (!e.date || !VALID_DATE_RE.test(e.date) || parseInt(e.date.slice(0,4)) < 1900) {
+        console.warn(`[pushToOdoo] Invalid date "${e.date}" for ${e.invoiceNo} — replacing with ${today}`);
+        e.date = today;
+      }
+    });
 
     try {
       const res = await fetch(`${window.location.origin}/api/odoo/create-journal-entries`, {
