@@ -848,14 +848,33 @@ function copyInv(invNo, btn) {
       return;
     }
 
+    const today = new Date().toISOString().slice(0, 10);
+
+    // ── Normalize 26AS date (DD-Mon-YYYY) → YYYY-MM-DD for Odoo ──
+    const normalizeDateForOdoo = (dateStr) => {
+      if (!dateStr) return today;
+      if (/^\d{4}-\d{2}-\d{2}$/.test(dateStr.trim())) return dateStr.trim();
+      const MON = { jan:1,feb:2,mar:3,apr:4,may:5,jun:6,jul:7,aug:8,sep:9,oct:10,nov:11,dec:12 };
+      const m = dateStr.trim().match(/^(\d{1,2})-([A-Za-z]{3})-(\d{2,4})$/);
+      if (m) {
+        const month = MON[m[2].toLowerCase()];
+        let year = parseInt(m[3]);
+        if (year < 100) year += 2000;
+        if (month) return `${year}-${String(month).padStart(2,'0')}-${String(m[1]).padStart(2,'0')}`;
+      }
+      const d = new Date(dateStr);
+      if (!isNaN(d)) return d.toISOString().slice(0, 10);
+      return today;
+    };
+
     // Build entries array with partner info from invoice data
     const entries = [];
     unbooked.forEach((r) => {
       const tdsAmt = r.tdsDeposited || r.tdsDeducted || 0;
       const invoiceNoStr = (invoiceLinks[r.id] || r.invoiceNo || '').trim();
       const invNos = invoiceNoStr.split(',').map(s => s.trim()).filter(Boolean);
-      // Use the 26AS transaction date (when TDS was actually deposited/deducted)
-      const entryDate = r.date || new Date().toISOString().slice(0, 10);
+      // Use the 26AS transaction date (when TDS was deposited), normalized to YYYY-MM-DD for Odoo
+      const entryDate = normalizeDateForOdoo(r.date);
 
       if (invNos.length <= 1) {
         // Get partner from invoice if available
