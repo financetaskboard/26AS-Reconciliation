@@ -377,7 +377,7 @@ const css = `
   .cb2:hover:not(:disabled){background:var(--sur)} .cb2:active:not(:disabled){background:#e5e5e5}
   .cb2.bl{color:var(--a)} .cb2.gn{color:var(--grn)} .cb2.rd{color:var(--red)} .cb2:disabled{opacity:0.35;cursor:default}
   .cbar-r{margin-left:auto;font-size:11.5px;color:var(--tx2)}
-  .content{flex:1;overflow:auto;display:flex;flex-direction:column}
+  .content{flex:1;overflow:auto;display:flex;flex-direction:column;position:relative}
   .home{padding:26px 34px;overflow-y:auto}
   .hero{background:linear-gradient(135deg,#0078d4,#005a9e);border-radius:7px;padding:32px 40px;color:#fff;margin-bottom:24px;display:flex;justify-content:space-between;align-items:center}
   .hero h1{font-size:24px;font-weight:300;margin-bottom:5px} .hero p{font-size:12.5px;opacity:0.85;line-height:1.6;max-width:460px}
@@ -6994,7 +6994,7 @@ export default function App() {
             const sortedDates = Object.keys(byDate).sort((a,b)=>b.localeCompare(a));
 
             return (
-              <div style={{flex:"1 1 0%",overflow:"hidden",display:"flex",flexDirection:"column",height:"100%"}}>
+              <div style={{position:"absolute",inset:0,overflow:"hidden",display:"flex",flexDirection:"column"}}>
 
                 {/* Compact stats + actions bar (single row) */}
                 <div style={{background:"var(--wh)",borderBottom:"1px solid var(--bd)",padding:"7px 16px",display:"flex",alignItems:"center",gap:0,flexShrink:0}}>
