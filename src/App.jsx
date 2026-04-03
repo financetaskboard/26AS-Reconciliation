@@ -884,6 +884,18 @@ function copyInv(invNo, btn) {
           return { date: d, source: 'parsed', raw: trimmed };
         }
       }
+      // 3b. DD-Mon-YYY (3-digit year — TRACES file truncation bug e.g. "30-Dec-202" = "30-Dec-2025")
+      // Infer full year: Apr-Dec = 2025, Jan-Mar = 2026 (for FY 2025-26)
+      const m3 = trimmed.match(/^(\d{1,2})-([A-Za-z]{3,9})-(\d{3})$/);
+      if (m3) {
+        const month = MON[m3[2].substring(0,3).toLowerCase()];
+        if (month) {
+          const yr = month >= 4 ? 2025 : 2026; // Apr-Dec → 2025, Jan-Mar → 2026
+          const d = `${yr}-${String(month).padStart(2,'0')}-${String(m3[1]).padStart(2,'0')}`;
+          console.warn(`[normalizeDateForOdoo] 3-digit year truncation fixed: "${trimmed}" → "${d}"`);
+          return { date: d, source: 'parsed', raw: trimmed };
+        }
+      }
       // 4. DD/MM/YYYY or DD-MM-YYYY (numeric)
       const mNum = trimmed.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
       if (mNum) {
@@ -1528,8 +1540,12 @@ export default function App() {
   // (e.g. Client Master) to Push Log leaves .content scrolled down, creating
   // blank space at the top of the new view.
   useEffect(() => {
-    const el = document.querySelector('.content');
-    if (el) el.scrollTop = 0;
+    // Reset scroll in current frame AND next paint frame — the rAF handles cases
+    // where React hasn't finished painting the new view when the effect runs.
+    const reset = () => { const el = document.querySelector('.content'); if (el) el.scrollTop = 0; };
+    reset();
+    const raf = requestAnimationFrame(reset);
+    return () => cancelAnimationFrame(raf);
   }, [view]);
 
   const updateCurYear = useCallback((updater) => {
@@ -4119,7 +4135,7 @@ export default function App() {
                 </div>
               </div>
             )}
-            {!tracesPortalOpen&&<>
+            {!tracesPortalOpen&&view!=="odoolog"&&<>
             <div style={{display:"flex",alignItems:"center",gap:1,padding:"4px 15px"}}>
             <div className="cg">
               <button className="cb2 bl" onClick={()=>openImport(['txt','xml'])}><Ic d={I.file} s={17} c="#0078d4"/>Import 26AS</button>
