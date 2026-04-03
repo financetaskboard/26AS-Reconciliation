@@ -1482,6 +1482,15 @@ export default function App() {
     console.log(`[TAN Master Changed] Count: ${tanMaster.length}, With Emails: ${tanMaster.filter(r=>r.contactEmail?.includes("@")).length}, With CC: ${tanMaster.filter(r=>r.ccEmail?.includes("@")).length}`);
   }, [tanMaster]);
 
+  // ── Reset scroll position when switching views ──────────────────────────────
+  // .content has overflow:auto — without this, switching from a scrolled view
+  // (e.g. Client Master) to Push Log leaves .content scrolled down, creating
+  // blank space at the top of the new view.
+  useEffect(() => {
+    const el = document.querySelector('.content');
+    if (el) el.scrollTop = 0;
+  }, [view]);
+
   const updateCurYear = useCallback((updater) => {
     setCompanies(prev => prev.map(c => {
       if (c.id !== selCompanyId) return c;
