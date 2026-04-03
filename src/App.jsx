@@ -850,42 +850,74 @@ function copyInv(invNo, btn) {
 
     const today = new Date().toISOString().slice(0, 10);
 
-    // ── Normalize 26AS date (DD-Mon-YYYY) → YYYY-MM-DD for Odoo ──
-    // CRITICAL: Odoo requires exactly YYYY-MM-DD. 26AS dates come as DD-Mon-YYYY
-    // (e.g. "30-Dec-2025"). Some 26AS files have truncated years (e.g. "30-Dec-202")
-    // which the old regex (\d{2,4}) accepted, producing invalid dates like "202-12-30".
+    // ══ Normalize 26AS date → YYYY-MM-DD for Odoo ══
+    // Returns { date: "YYYY-MM-DD", source: "parsed"|"today", raw: originalString }
+    // Handles: DD-Mon-YYYY (30-Dec-2025), DD-MM-YYYY, DD/MM/YYYY,
+    //          DD Mon YYYY (space), YYYY-MM-DD, YYYY/MM/DD, DD-Mon-YY
     const normalizeDateForOdoo = (dateStr) => {
-      if (!dateStr) return today;
-      const trimmed = dateStr.trim();
-      // Already in YYYY-MM-DD format
-      if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return trimmed;
+      if (!dateStr || !String(dateStr).trim()) {
+        console.warn('[normalizeDateForOdoo] Empty/null date — falling back to today');
+        return { date: today, source: 'today', raw: dateStr };
+      }
+      const trimmed = String(dateStr).trim();
       const MON = { jan:1,feb:2,mar:3,apr:4,may:5,jun:6,jul:7,aug:8,sep:9,oct:10,nov:11,dec:12 };
-      // DD-Mon-YYYY — require EXACTLY 4-digit year (e.g. 30-Dec-2025)
-      const m4 = trimmed.match(/^(\d{1,2})-([A-Za-z]{3})-(\d{4})$/);
+
+      // 1. Already YYYY-MM-DD
+      if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed))
+        return { date: trimmed, source: 'parsed', raw: trimmed };
+
+      // 2. DD-Mon-YYYY (e.g. 30-Dec-2025) — TRACES 26AS standard
+      const m4 = trimmed.match(/^(\d{1,2})-([A-Za-z]{3,9})-(\d{4})$/);
       if (m4) {
-        const month = MON[m4[2].toLowerCase()];
-        if (month) return `${parseInt(m4[3])}-${String(month).padStart(2,'0')}-${String(m4[1]).padStart(2,'0')}`;
+        const month = MON[m4[2].substring(0,3).toLowerCase()];
+        if (month) {
+          const d = `${m4[3]}-${String(month).padStart(2,'0')}-${String(m4[1]).padStart(2,'0')}`;
+          return { date: d, source: 'parsed', raw: trimmed };
+        }
       }
-      // DD-Mon-YY — exactly 2-digit year (e.g. 30-Dec-25 → 2025)
-      const m2 = trimmed.match(/^(\d{1,2})-([A-Za-z]{3})-(\d{2})$/);
+      // 3. DD-Mon-YY (e.g. 30-Dec-25 → 2025)
+      const m2 = trimmed.match(/^(\d{1,2})-([A-Za-z]{3,9})-(\d{2})$/);
       if (m2) {
-        const month = MON[m2[2].toLowerCase()];
-        if (month) return `${parseInt(m2[3]) + 2000}-${String(month).padStart(2,'0')}-${String(m2[1]).padStart(2,'0')}`;
+        const month = MON[m2[2].substring(0,3).toLowerCase()];
+        if (month) {
+          const d = `${parseInt(m2[3]) + 2000}-${String(month).padStart(2,'0')}-${String(m2[1]).padStart(2,'0')}`;
+          return { date: d, source: 'parsed', raw: trimmed };
+        }
       }
-      // DD/MM/YYYY or DD-MM-YYYY (numeric month)
+      // 4. DD/MM/YYYY or DD-MM-YYYY (numeric)
       const mNum = trimmed.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
-      if (mNum) return `${mNum[3]}-${String(mNum[2]).padStart(2,'0')}-${String(mNum[1]).padStart(2,'0')}`;
-      // YYYY/MM/DD
+      if (mNum) {
+        const d = `${mNum[3]}-${String(mNum[2]).padStart(2,'0')}-${String(mNum[1]).padStart(2,'0')}`;
+        return { date: d, source: 'parsed', raw: trimmed };
+      }
+      // 5. YYYY/MM/DD
       const mISO = trimmed.match(/^(\d{4})[\/](\d{1,2})[\/](\d{1,2})$/);
-      if (mISO) return `${mISO[1]}-${String(mISO[2]).padStart(2,'0')}-${String(mISO[3]).padStart(2,'0')}`;
-      // Fallback: JS Date constructor (reject results with year < 1900 or > 2100)
+      if (mISO) {
+        const d = `${mISO[1]}-${String(mISO[2]).padStart(2,'0')}-${String(mISO[3]).padStart(2,'0')}`;
+        return { date: d, source: 'parsed', raw: trimmed };
+      }
+      // 6. DD Mon YYYY (space-separated, e.g. "30 Dec 2025")
+      const mSpace = trimmed.match(/^(\d{1,2})\s+([A-Za-z]{3,9})\s+(\d{4})$/);
+      if (mSpace) {
+        const month = MON[mSpace[2].substring(0,3).toLowerCase()];
+        if (month) {
+          const d = `${mSpace[3]}-${String(month).padStart(2,'0')}-${String(mSpace[1]).padStart(2,'0')}`;
+          return { date: d, source: 'parsed', raw: trimmed };
+        }
+      }
+      // 7. JS Date constructor fallback
       try {
-        const d = new Date(trimmed);
-        if (!isNaN(d) && d.getFullYear() >= 1900 && d.getFullYear() <= 2100) return d.toISOString().slice(0, 10);
+        const jsDate = new Date(trimmed);
+        if (!isNaN(jsDate) && jsDate.getFullYear() >= 2000 && jsDate.getFullYear() <= 2100) {
+          const parsed = jsDate.toISOString().slice(0, 10);
+          console.log('[normalizeDateForOdoo] JS Date fallback:', trimmed, '→', parsed);
+          return { date: parsed, source: 'parsed', raw: trimmed };
+        }
       } catch(e) {}
-      // Final safety net — log warning and use today so Odoo never gets a malformed date
-      console.warn('[normalizeDateForOdoo] Could not parse date, falling back to today:', trimmed);
-      return today;
+      // Could not parse — log full character info and fall back to today
+      console.error('[normalizeDateForOdoo] ❌ UNPARSEABLE DATE — falling back to today:',
+        JSON.stringify(trimmed), 'chars:', [...trimmed].map(c => c.charCodeAt(0)));
+      return { date: today, source: 'today', raw: trimmed };
     };
 
     // Build entries array with partner info from invoice data
@@ -895,7 +927,9 @@ function copyInv(invNo, btn) {
       const invoiceNoStr = (invoiceLinks[r.id] || r.invoiceNo || '').trim();
       const invNos = invoiceNoStr.split(',').map(s => s.trim()).filter(Boolean);
       // Use the 26AS transaction date (when TDS was deposited), normalized to YYYY-MM-DD for Odoo
-      const entryDate = normalizeDateForOdoo(r.date);
+      const { date: entryDate, source: dateSource, raw: rawDate } = normalizeDateForOdoo(r.date);
+      console.log(`[pushToOdoo] 26AS date raw="${rawDate}" → "${entryDate}" (${dateSource})`);
+      if (dateSource === 'today') console.warn(`[pushToOdoo] ⚠ Could not parse 26AS date for row id=${r.id}, tan=${r.tan}`);
 
       if (invNos.length <= 1) {
         // Get partner from invoice if available
@@ -909,7 +943,8 @@ function copyInv(invNo, btn) {
         entries.push({ 
           invoiceNo: invoiceNoStr, 
           amount: tdsAmt, 
-          date: entryDate, 
+          date: entryDate,
+          _rawDate: rawDate,
           partnerName: partnerFromInv || deductorName,
           odooPartnerId: finalPartnerId,
           tan 
@@ -929,7 +964,8 @@ function copyInv(invNo, btn) {
           entries.push({ 
             invoiceNo: inv.invNo, 
             amount: splitTds, 
-            date: entryDate, 
+            date: entryDate,
+            _rawDate: rawDate,
             partnerName: inv.partnerName || deductorName,
             odooPartnerId: finalPartnerId,
             tan 
@@ -938,19 +974,24 @@ function copyInv(invNo, btn) {
       }
     });
 
-    if (!window.confirm(`Push ${entries.length} journal entries to Odoo?\n\nDeductor: ${deductorName || tan}\n\nEntries:\n${entries.slice(0,5).map(e => `• ${e.invoiceNo}: ₹${e.amount.toLocaleString('en-IN')}`).join('\n')}${entries.length > 5 ? `\n... and ${entries.length - 5} more` : ''}`)) {
+    if (!window.confirm(`Push ${entries.length} journal entries to Odoo?\n\nDeductor: ${deductorName || tan}\n\nEntries (with 26AS dates):\n${entries.slice(0,5).map(e => `• ${e.invoiceNo}: \u20b9${e.amount.toLocaleString('en-IN')} | Date: ${e.date}`).join('\n')}${entries.length > 5 ? `\n... and ${entries.length - 5} more` : ''}`)) {
       return;
     }
 
-    // ── SAFETY: Validate ALL entry dates are strict YYYY-MM-DD before sending ──
-    // This catches any edge case the normalizer missed (truncated years, weird formats)
+    // ══ SAFETY: Validate ALL entry dates are strict YYYY-MM-DD before sending ══
     const VALID_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
-    entries.forEach(e => {
-      if (!e.date || !VALID_DATE_RE.test(e.date) || parseInt(e.date.slice(0,4)) < 1900) {
-        console.warn(`[pushToOdoo] Invalid date "${e.date}" for ${e.invoiceNo} — replacing with ${today}`);
-        e.date = today;
-      }
-    });
+    const badDate = entries.find(e => !e.date || !VALID_DATE_RE.test(e.date) || parseInt(e.date.slice(0,4)) < 2000);
+    if (badDate) {
+      const msg = `❌ Date error for entry "${badDate.invoiceNo}":\n` +
+        `  Raw 26AS date: "${badDate._rawDate}"\n` +
+        `  Parsed result: "${badDate.date}"\n\n` +
+        `The 26AS date could not be recognised.\n` +
+        `Expected format: DD-Mon-YYYY (e.g. 31-Dec-2025) or DD-MM-YYYY.\n\n` +
+        `Please check your 26AS file and try again.`;
+      alert(msg);
+      console.error('[pushToOdoo] Aborting — bad date entry:', badDate);
+      return;
+    }
 
     try {
       const res = await fetch(`${window.location.origin}/api/odoo/create-journal-entries`, {
