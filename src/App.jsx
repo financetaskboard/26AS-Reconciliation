@@ -6994,73 +6994,71 @@ export default function App() {
             const sortedDates = Object.keys(byDate).sort((a,b)=>b.localeCompare(a));
 
             return (
-              <div style={{flex:1,overflow:"hidden",display:"flex",flexDirection:"column",minHeight:0}}>
+              <div style={{flex:"1 1 0%",overflow:"hidden",display:"flex",flexDirection:"column",height:"100%"}}>
 
-                {/* Stats bar */}
-                <div style={{background:"var(--wh)",borderBottom:"1px solid var(--bd)",padding:"12px 24px",display:"flex",alignItems:"stretch",flexShrink:0}}>
+                {/* Compact stats + actions bar (single row) */}
+                <div style={{background:"var(--wh)",borderBottom:"1px solid var(--bd)",padding:"7px 16px",display:"flex",alignItems:"center",gap:0,flexShrink:0}}>
                   {[
-                    {l:"Total Pushes",   v:filtered.length, c:"#5c2d91"},
-                    {l:"Entries Created",v:totalEntries,    c:"#107c10"},
-                    {l:"Failed",         v:totalFailed,     c:"#a80000"},
-                    {l:"Total TDS Pushed",v:fmtAmt(totalAmt),c:"#0078d4",wide:true},
+                    {l:"Pushes",   v:filtered.length, c:"#5c2d91"},
+                    {l:"Created",  v:totalEntries,    c:"#107c10"},
+                    {l:"Failed",   v:totalFailed,     c:"#a80000"},
+                    {l:"TDS Pushed",v:fmtAmt(totalAmt),c:"#0078d4",wide:true},
                   ].map((s,i)=>(
-                    <div key={i} style={{flex:s.wide?2:1,padding:"8px 18px",borderRight:i<3?"1px solid var(--bd)":"none"}}>
-                      <div style={{fontSize:10,color:"var(--tx2)",textTransform:"uppercase",letterSpacing:"0.6px",marginBottom:4}}>{s.l}</div>
-                      <div style={{fontSize:s.wide?16:22,fontWeight:300,color:s.c,fontFamily:s.wide?"Consolas,monospace":"inherit"}}>{s.v}</div>
+                    <div key={i} style={{padding:"4px 16px",borderRight:i<3?"1px solid var(--bd)":"none",display:"flex",alignItems:"center",gap:6}}>
+                      <span style={{fontSize:10,color:"var(--tx2)",textTransform:"uppercase",letterSpacing:"0.4px",whiteSpace:"nowrap"}}>{s.l}</span>
+                      <span style={{fontSize:s.wide?13:16,fontWeight:s.wide?600:700,color:s.c,fontFamily:s.wide?"Consolas,monospace":"inherit"}}>{s.v}</span>
                     </div>
                   ))}
-                  <div style={{display:"flex",alignItems:"center",gap:8,padding:"0 0 0 20px",marginLeft:"auto",borderLeft:"1px solid var(--bd)"}}>
+                  <div style={{display:"flex",alignItems:"center",gap:6,marginLeft:"auto"}}>
                     <button
                       onClick={()=>downloadCSV(filtered, (odooLogPeriod==="All"?"All":odooLogPeriod)+"_"+new Date().toISOString().slice(0,10))}
                       disabled={!filtered.length}
-                      style={{background:"#107c10",color:"#fff",border:"none",borderRadius:4,padding:"8px 16px",cursor:"pointer",fontSize:12,fontFamily:"inherit",fontWeight:600,opacity:filtered.length?1:0.4,display:"flex",alignItems:"center",gap:6}}>
-                      Download CSV ({filtered.length} pushes)
+                      style={{background:"#107c10",color:"#fff",border:"none",borderRadius:3,padding:"5px 12px",cursor:"pointer",fontSize:11.5,fontFamily:"inherit",fontWeight:600,opacity:filtered.length?1:0.4}}>
+                      ⬇ CSV ({filtered.length})
                     </button>
                     <button
                       onClick={()=>{if(window.confirm("Clear all "+odooLog.length+" log entries? This cannot be undone."))setOdooLog([]);}}
                       disabled={!odooLog.length}
-                      style={{background:"none",border:"1px solid #a80000",borderRadius:4,padding:"8px 12px",cursor:"pointer",fontSize:12,fontFamily:"inherit",color:"#a80000",opacity:odooLog.length?1:0.4}}>
-                      Clear Log
+                      style={{background:"none",border:"1px solid #a80000",borderRadius:3,padding:"5px 10px",cursor:"pointer",fontSize:11.5,fontFamily:"inherit",color:"#a80000",opacity:odooLog.length?1:0.4}}>
+                      Clear
                     </button>
                   </div>
                 </div>
 
                 {/* Filter + Period + Search bar */}
-                <div style={{background:"var(--wh)",borderBottom:"1px solid var(--bd)",padding:"8px 24px",display:"flex",alignItems:"center",gap:10,flexWrap:"wrap",flexShrink:0}}>
-                  <div style={{display:"flex",alignItems:"center",gap:6}}>
-                    <span style={{fontSize:11,fontWeight:600,color:"var(--tx2)",textTransform:"uppercase",letterSpacing:"0.4px"}}>Period</span>
-                    <select value={odooLogPeriod} onChange={e=>setOdooLogPeriod(e.target.value)}
-                      style={{padding:"4px 10px",border:"1px solid var(--bd)",borderRadius:3,fontSize:12,fontFamily:"inherit",background:"var(--wh)",color:"var(--tx)",cursor:"pointer",outline:"none"}}>
-                      {periodOptions.map(p=>
-                        typeof p==="string"
-                          ? <option key="All" value="All">All Months</option>
-                          : <option key={p.key} value={p.key}>{p.label}</option>
-                      )}
-                    </select>
-                  </div>
-                  <div style={{width:1,height:20,background:"var(--bd)",margin:"0 4px"}}/>
+                <div style={{background:"var(--wh)",borderBottom:"1px solid var(--bd)",padding:"5px 16px",display:"flex",alignItems:"center",gap:8,flexWrap:"wrap",flexShrink:0}}>
+                  <span style={{fontSize:11,fontWeight:600,color:"var(--tx2)"}}>Period</span>
+                  <select value={odooLogPeriod} onChange={e=>setOdooLogPeriod(e.target.value)}
+                    style={{padding:"3px 8px",border:"1px solid var(--bd)",borderRadius:3,fontSize:11.5,fontFamily:"inherit",background:"var(--wh)",color:"var(--tx)",cursor:"pointer",outline:"none"}}>
+                    {periodOptions.map(p=>
+                      typeof p==="string"
+                        ? <option key="All" value="All">All Months</option>
+                        : <option key={p.key} value={p.key}>{p.label}</option>
+                    )}
+                  </select>
+                  <div style={{width:1,height:18,background:"var(--bd)"}}/>
                   {[["All","All"],["AllPosted","No Failures"],["HasFailed","Has Failures"]].map(([k,l])=>(
                     <button key={k} onClick={()=>setOdooLogFilter(k)}
                       style={{background:odooLogFilter===k?"var(--a)":"none",color:odooLogFilter===k?"#fff":"var(--tx2)",
                         border:"1px solid "+(odooLogFilter===k?"var(--a)":"var(--bd)"),borderRadius:3,
-                        padding:"4px 12px",cursor:"pointer",fontSize:11.5,fontFamily:"inherit",transition:"all 0.15s"}}>
+                        padding:"3px 10px",cursor:"pointer",fontSize:11,fontFamily:"inherit"}}>
                       {l}
                     </button>
                   ))}
-                  <div style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:8}}>
-                    <div style={{display:"flex",alignItems:"center",gap:6,border:"1px solid var(--bd)",borderRadius:3,padding:"4px 8px",background:"var(--sur)"}}>
-                      <span style={{fontSize:12,color:"#aaa"}}>🔍</span>
+                  <div style={{marginLeft:"auto",display:"flex",alignItems:"center",gap:6}}>
+                    <div style={{display:"flex",alignItems:"center",gap:5,border:"1px solid var(--bd)",borderRadius:3,padding:"3px 8px",background:"var(--sur)"}}>
+                      <Ic d={I.search} s={11} c="#aaa"/>
                       <input placeholder="Search TAN, deductor, company..." value={odooLogSearch}
                         onChange={e=>setOdooLogSearch(e.target.value)}
-                        style={{border:"none",outline:"none",background:"transparent",fontSize:12,fontFamily:"inherit",width:220,color:"var(--tx)"}}/>
-                      {odooLogSearch&&<span onClick={()=>setOdooLogSearch("")} style={{cursor:"pointer",color:"#aaa",fontSize:12,lineHeight:1}}>✕</span>}
+                        style={{border:"none",outline:"none",background:"transparent",fontSize:11.5,fontFamily:"inherit",width:200,color:"var(--tx)"}}/>
+                      {odooLogSearch&&<span onClick={()=>setOdooLogSearch("")} style={{cursor:"pointer",color:"#aaa",fontSize:11}}>✕</span>}
                     </div>
-                    <span style={{fontSize:11.5,color:"var(--tx2)",whiteSpace:"nowrap"}}>{filtered.length} push{filtered.length!==1?"es":""}</span>
+                    <span style={{fontSize:11,color:"var(--tx2)",whiteSpace:"nowrap"}}>{filtered.length} pushes</span>
                   </div>
                 </div>
 
-                {/* Flat table */}
-                <div style={{flex:1,overflow:"auto"}}>
+                {/* Table — fills remaining space */}
+                <div style={{flex:"1 1 0%",overflow:"auto",minHeight:0}}>
                   {!odooLog.length ? (
                     <div style={{margin:"80px auto",textAlign:"center",color:"var(--tx2)"}}>
                       <div style={{fontSize:40,marginBottom:12}}>📤</div>
