@@ -6119,7 +6119,6 @@ export default function App() {
         </td></tr>
       </table>
     </div>
-    ${qtrTableRows?`<div style="margin-bottom:22px"><table style="width:100%;border-collapse:collapse;font-size:13px"><thead><tr style="background:#e8f0fe"><th style="padding:9px 16px;text-align:left;font-weight:700;color:#0078d4;border-bottom:2px solid #b3d4f0">Quarter</th><th style="padding:9px 16px;text-align:right;font-weight:700;color:#0078d4;border-bottom:2px solid #b3d4f0">TDS in 26AS</th><th style="padding:9px 16px;text-align:right;font-weight:700;color:#0078d4;border-bottom:2px solid #b3d4f0">Status in Books</th></tr>${qtrTableRows}</table></div>`:""}
     <div style="border-left:3px solid #0078d4;background:#f8f9fa;padding:14px 18px;border-radius:0 5px 5px 0;margin-bottom:20px">
       <div style="font-size:13px;font-weight:700;color:#201f1e;margin-bottom:8px">We request you to kindly provide:</div>
       <ol style="margin:0;padding-left:18px;color:#444;font-size:13px;line-height:1.9">
@@ -6257,7 +6256,6 @@ export default function App() {
       </table>
     </div>
 
-    ${qtrTableRows?`<div style="margin-bottom:22px"><table style="width:100%;border-collapse:collapse;font-size:13px"><thead><tr style="background:#f4f9fe"><th style="padding:9px 16px;text-align:left;font-weight:700;color:#0078d4;border-bottom:2px solid #b3d4f0">Quarter</th><th style="padding:9px 16px;text-align:right;font-weight:700;color:#0078d4;border-bottom:2px solid #b3d4f0">TDS — 26AS</th><th style="padding:9px 16px;text-align:right;font-weight:700;color:#0078d4;border-bottom:2px solid #b3d4f0">TDS — Books</th><th style="padding:9px 16px;text-align:right;font-weight:700;color:#0078d4;border-bottom:2px solid #b3d4f0">Pending</th></tr>${qtrTableRows}</table></div>`:""}
 
     <div style="border-left:3px solid #0078d4;background:#f8f9fa;padding:14px 18px;border-radius:0 5px 5px 0;margin-bottom:20px">
       <div style="font-size:13px;font-weight:700;color:#201f1e;margin-bottom:8px">You are requested to kindly:</div>
