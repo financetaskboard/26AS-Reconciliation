@@ -271,8 +271,8 @@ function runMatchingEngine(data26AS, dataBooks) {
       const isTDSMatch = Math.abs(tdsDiff) < 1;
       const isNear = !isTDSMatch && Math.abs(tdsDiff) < 100;
       // Positive diff = 26AS has more TDS than Books = entry missing/short in Books
-      const matchStatus = isTDSMatch ? "Matched" : isNear ? "Near Match" : tdsDiff > 0 ? "Missing in Books" : "Mismatch";
-      const mismatchReason = isTDSMatch ? "" : tdsDiff > 0 ? `26AS TDS higher by ₹${Math.abs(tdsDiff).toLocaleString("en-IN",{maximumFractionDigits:2})} — check Books entries` : `Books TDS higher by ₹${Math.abs(tdsDiff).toLocaleString("en-IN",{maximumFractionDigits:2})} — possible duplicate in Books`;
+      const matchStatus = isTDSMatch ? "Matched" : isNear ? "Near Match" : tdsDiff > 0 ? "Missing in Books" : "Excess in Books";
+      const mismatchReason = isTDSMatch ? "" : tdsDiff > 0 ? `26AS TDS higher by ₹${Math.abs(tdsDiff).toLocaleString("en-IN",{maximumFractionDigits:2})} — check Books entries` : `Books TDS higher by ₹${Math.abs(tdsDiff).toLocaleString("en-IN",{maximumFractionDigits:2})} — excess TDS booked in Books`;
       results.push({ id:id++, tan, as_name:a.name, as_tds:a.tds, as_deposited:a.deposited, as_txns:a.txns, as_sections:[...a.sections].join(", "), bk_name:b.name, bk_tds:b.tds, bk_txns:b.txns, tds_diff:tdsDiff, matchStatus, mismatchReason });
     } else if (a) {
       // Check if this deductor's name appears in Books under a different TAN or no TAN
@@ -284,14 +284,14 @@ function runMatchingEngine(data26AS, dataBooks) {
         : "TAN not found in Books";
       results.push({ id:id++, tan, as_name:a.name, as_tds:a.tds, as_deposited:a.deposited, as_txns:a.txns, as_sections:[...a.sections].join(", "), bk_name:"", bk_tds:0, bk_txns:0, tds_diff:a.tds, matchStatus:"Missing in Books", mismatchReason, partyInBooks:nameMatchInBooks });
     } else {
-      results.push({ id:id++, tan, as_name:"", as_tds:0, as_deposited:0, as_txns:0, as_sections:"", bk_name:b.name, bk_tds:b.tds, bk_txns:b.txns, tds_diff:-b.tds, matchStatus:"Missing in 26AS", mismatchReason:"TAN not found in 26AS" });
+      results.push({ id:id++, tan, as_name:"", as_tds:0, as_deposited:0, as_txns:0, as_sections:"", bk_name:b.name, bk_tds:b.tds, bk_txns:b.txns, tds_diff:-b.tds, matchStatus:"Excess in Books", mismatchReason:"TAN not found in 26AS — excess TDS booked in Books" });
     }
   });
   // Append Books-only rows that have no TAN — shown as "Missing TAN" so user can act on them
   Object.values(noTanBk).forEach(g => {
     results.push({ id:id++, tan:"—", as_name:"", as_tds:0, as_deposited:0, as_txns:0, as_sections:"", bk_name:g.name, bk_tds:g.tds, bk_txns:g.txns, tds_diff:-g.tds, matchStatus:"Missing TAN", mismatchReason:`TAN not assigned in Books — assign TAN to reconcile (${g.txns} txn${g.txns!==1?"s":""})` });
   });
-  const order = {"Missing TAN":-1,"Mismatch":0,"Missing in Books":1,"Near Match":2,"Missing in 26AS":3,"Matched":4};
+  const order = {"Missing TAN":-1,"Excess in Books":0,"Missing in Books":1,"Near Match":2,"Matched":4};
   return results.sort((a,b)=>(order[a.matchStatus]??5)-(order[b.matchStatus]??5));
 }
 
@@ -328,20 +328,20 @@ function runSectionMatchingEngine(data26AS, dataBooks) {
     if(a && b) {
       const diff = a.tds - b.tds;
       const isMatch = Math.abs(diff)<1, isNear = !isMatch && Math.abs(diff)<100;
-      const matchStatus = isMatch?"Matched":isNear?"Near Match":diff>0?"Missing in Books":"Mismatch";
+      const matchStatus = isMatch?"Matched":isNear?"Near Match":diff>0?"Missing in Books":"Excess in Books";
       const reason = isMatch?"":diff>0?`26AS ₹${Math.abs(diff).toLocaleString("en-IN",{maximumFractionDigits:2})} higher`:`Books ₹${Math.abs(diff).toLocaleString("en-IN",{maximumFractionDigits:2})} higher`;
       results.push({ id:id++, tan, section, name, as_tds:a.tds, as_txns:a.txns, bk_tds:b.tds, bk_txns:b.txns, tds_diff:diff, matchStatus, reason });
     } else if(a) {
       results.push({ id:id++, tan, section, name, as_tds:a.tds, as_txns:a.txns, bk_tds:0, bk_txns:0, tds_diff:a.tds, matchStatus:"Missing in Books", reason:"Section not in Books" });
     } else {
-      results.push({ id:id++, tan, section, name, as_tds:0, as_txns:0, bk_tds:b.tds, bk_txns:b.txns, tds_diff:-b.tds, matchStatus:"Missing in 26AS", reason:"Section not in 26AS" });
+      results.push({ id:id++, tan, section, name, as_tds:0, as_txns:0, bk_tds:b.tds, bk_txns:b.txns, tds_diff:-b.tds, matchStatus:"Excess in Books", reason:"Section not in 26AS — excess TDS booked in Books" });
     }
   });
   // Append no-TAN Books entries in section view too
   Object.values(noTanSec).forEach(g => {
     results.push({ id:id++, tan:"—", section:g.section, name:g.name, as_tds:0, as_txns:0, bk_tds:g.tds, bk_txns:g.txns, tds_diff:-g.tds, matchStatus:"Missing TAN", reason:`TAN not assigned — assign TAN to reconcile (${g.txns} txn${g.txns!==1?"s":""})` });
   });
-  const order = {"Missing TAN":-1,"Mismatch":0,"Missing in Books":1,"Near Match":2,"Missing in 26AS":3,"Matched":4};
+  const order = {"Missing TAN":-1,"Excess in Books":0,"Missing in Books":1,"Near Match":2,"Matched":4};
   return results.sort((a,b)=>a.tan.localeCompare(b.tan)||(order[a.matchStatus]??5)-(order[b.matchStatus]??5));
 }
 
@@ -1115,7 +1115,7 @@ Log saved - check Push Log tab`
                 : `Transaction-wise breakdown · ${as.length} in 26AS · ${bk.length} in Books · Select Books rows first, then 26AS rows, then Confirm Match`}
             </div>
           </div>
-          <span className={`tg ${tanRow?.matchStatus==="Matched"?"tg-m":tanRow?.matchStatus==="Mismatch"?"tg-mm":tanRow?.matchStatus==="Near Match"?"tg-nm":tanRow?.matchStatus==="Missing in Books"?"tg-mib":tanRow?.matchStatus==="Missing TAN"?"tg-mt":"tg-mia"}`} style={{marginLeft:12}}>{tanRow?.matchStatus}</span>
+          <span className={`tg ${tanRow?.matchStatus==="Matched"?"tg-m":tanRow?.matchStatus==="Excess in Books"?"tg-mm":tanRow?.matchStatus==="Near Match"?"tg-nm":tanRow?.matchStatus==="Missing in Books"?"tg-mib":tanRow?.matchStatus==="Missing TAN"?"tg-mt":"tg-mia"}`} style={{marginLeft:12}}>{tanRow?.matchStatus}</span>
           {/* Toolbar */}
           <div style={{display:"flex",alignItems:"center",gap:6,marginLeft:12,flexShrink:0}}>
             {canConfirm && (
@@ -3185,27 +3185,53 @@ export default function App() {
         odooCompany: record.odooCompany || ''
       }));
       
-      // Apply TAN Master name→TAN enrichment (same as CSV import path)
+      // ── STEP 1: Snapshot existing Books rows that already have a TAN assigned ──
+      // This captures any TAN the user manually set in a previous sync so we never lose it.
+      // We build TWO lookup maps:
+      //   a) exactPrevTan  – exact deductorName → TAN  (highest priority, catches same Odoo name)
+      //   b) normPrevTan   – normalised name → TAN     (fallback for minor formatting differences)
+      const normName = s => (s || '').toUpperCase().replace(/[^A-Z0-9]/g, '').trim();
+      const prevBooks = datasets["Books"] || [];
+      const exactPrevTan = {}; // exact deductorName → TAN
+      const normPrevTan  = {}; // normalised name → TAN
+      prevBooks.forEach(r => {
+        const t = (r.tan || '').trim();
+        if (!t) return;
+        const name = (r.deductorName || '').trim();
+        if (name && !exactPrevTan[name]) exactPrevTan[name] = t;
+        const nk = normName(name);
+        if (nk && !normPrevTan[nk]) normPrevTan[nk] = t;
+      });
+
+      // ── STEP 2: TAN Master name→TAN map (normalised) ──
       const master = tanMasterRef.current || [];
-      let enrichedData = booksData;
+      const masterNormTan = {};
       if (master.length > 0) {
-        const normName = s => (s || '').toUpperCase().replace(/[^A-Z0-9]/g, '').trim();
-        const nameToTan = {};
         master.forEach(r => {
           const allNames = [r.finalName, r.name26AS, r.nameBooks, ...(r.bookNames || [])].filter(Boolean);
-          allNames.forEach(n => { const k = normName(n); if (k && !nameToTan[k]) nameToTan[k] = r.tan; });
+          allNames.forEach(n => { const k = normName(n); if (k && !masterNormTan[k]) masterNormTan[k] = r.tan; });
         });
-        let enrichedCount = 0;
-        enrichedData = booksData.map(row => {
-          if (row.tan) return row;
-          const match = nameToTan[normName(row.deductorName)];
-          if (match) { enrichedCount++; return { ...row, tan: match }; }
-          return row;
-        });
-        if (enrichedCount > 0) addLog(`🔗 Auto-filled TAN for ${enrichedCount} Odoo Books row(s) from TAN Master`, 's');
-        const stillMissing = enrichedData.filter(r => !r.tan && r.deductorName).length;
-        if (stillMissing > 0) addLog(`⚠️ ${stillMissing} Odoo Books row(s) still have no TAN — use TAN Master to map`, 'w');
       }
+
+      // ── STEP 3: Apply TANs – priority order:
+      //   1. Exact name match from previous Books data (user's own assignment, most reliable)
+      //   2. Normalised name match from previous Books data
+      //   3. Normalised name match from TAN Master
+      //   4. Whatever Odoo itself sent (record.tan)
+      let enrichedCount = 0;
+      let enrichedData = booksData.map(row => {
+        // If Odoo provided a TAN use it as-is (it came from the source system)
+        if (row.tan) return row;
+        const name = (row.deductorName || '').trim();
+        const nk = normName(name);
+        const resolved = exactPrevTan[name] || normPrevTan[nk] || masterNormTan[nk] || '';
+        if (resolved) { enrichedCount++; return { ...row, tan: resolved }; }
+        return row;
+      });
+
+      if (enrichedCount > 0) addLog(`🔗 Auto-filled TAN for ${enrichedCount} Odoo Books row(s) from saved assignments`, 's');
+      const stillMissing = enrichedData.filter(r => !r.tan && r.deductorName).length;
+      if (stillMissing > 0) addLog(`⚠️ ${stillMissing} Odoo Books row(s) still have no TAN — use TAN Master to map`, 'w');
 
       // Process data same as CSV import
       const processed = enrichedData.map((row, idx) => ({
@@ -3639,7 +3665,7 @@ export default function App() {
     const results = runMatchingEngine(datasets["26AS"], datasets["Books"]);
     setReconResults(results); setReconDone(true); setView("recon");
     const matched = results.filter(r=>r.matchStatus==="Matched").length;
-    const mismatch = results.filter(r=>r.matchStatus==="Mismatch").length;
+    const mismatch = results.filter(r=>r.matchStatus==="Excess in Books").length;
     showToast(`Reconciliation done: ${matched} matched, ${mismatch} mismatches`);
     // Auto-backup after reconciliation — results are now saved
     setTimeout(() => driveBackupRef.current?.(), 1500);
@@ -3893,15 +3919,15 @@ export default function App() {
     // If a specific status is selected, export only that filtered view as the first/primary sheet
     const activeFilter = selStatus !== "All" ? selStatus : null;
     const sheetsToExport = activeFilter
-      ? [activeFilter, "All", ...["Matched","Near Match","Mismatch","Missing in Books","Missing in 26AS"].filter(s=>s!==activeFilter)]
-      : ["All","Missing TAN","Matched","Near Match","Mismatch","Missing in Books","Missing in 26AS"];
+      ? [activeFilter, "All", ...["Matched","Near Match","Excess in Books","Missing in Books"].filter(s=>s!==activeFilter)]
+      : ["All","Missing TAN","Matched","Near Match","Excess in Books","Missing in Books"];
     sheetsToExport.forEach(status => {
       const data = status==="All" ? liveResults : liveResults.filter(r=>r.matchStatus===status);
       if (!data.length && status!=="All" && status!==activeFilter) return;
       const rows = [headers, ...data.map(r=>cols.map(c=>r[c]??""))];
       const ws = XLSX.utils.aoa_to_sheet(rows);
       ws["!cols"] = [6,14,22,14,14,8,14,22,14,8,14,16,26].map(w=>({wch:w}));
-      const sheetName = status==="All"?"All Results":status==="Missing in Books"?"Missing-Books":status==="Missing in 26AS"?"Missing-26AS":status;
+      const sheetName = status==="All"?"All Results":status==="Missing in Books"?"Missing-Books":status==="Excess in Books"?"Excess-Books":status;
       XLSX.utils.book_append_sheet(wb, ws, sheetName);
     });
     const buf = XLSX.write(wb, {bookType:"xlsx", type:"array"});
@@ -3977,19 +4003,19 @@ export default function App() {
     return stm && mm && sm;
   });
   const hasActiveFilter = selQ !== "All" || dateFrom || dateTo;
-  const rs = { total:liveResults.length, matched:liveResults.filter(r=>r.matchStatus==="Matched").length, mismatch:liveResults.filter(r=>r.matchStatus==="Mismatch").length, mib:liveResults.filter(r=>r.matchStatus==="Missing in Books").length, mia:liveResults.filter(r=>r.matchStatus==="Missing in 26AS").length, mt:liveResults.filter(r=>r.matchStatus==="Missing TAN").length, tdsDiff: (() => {
-    // Net difference: Books TDS - 26AS TDS (same formula as Summary Dashboard)
-    // Positive = Books higher (over-booked), Negative = 26AS higher (short in Books)
+  const rs = { total:liveResults.length, matched:liveResults.filter(r=>r.matchStatus==="Matched").length, mismatch:liveResults.filter(r=>r.matchStatus==="Excess in Books").length, mib:liveResults.filter(r=>r.matchStatus==="Missing in Books").length, mia:0, mt:liveResults.filter(r=>r.matchStatus==="Missing TAN").length, tdsDiff: (() => {
+    // Net difference: 26AS TDS - Books TDS
+    // Always computed from ALL results (liveResults), never affected by status filter
     const as26  = liveResults.reduce((s,r) => s + (r.as_tds||0), 0);
     const books = liveResults.reduce((s,r) => s + (r.bk_tds||0), 0);
-    return as26 - books; // 26AS - Books: positive = short in Books
+    return as26 - books; // positive = short in Books; negative = excess in Books
   })() };
   const totalTDS = activeData.reduce((s,r)=>s+(r.tdsDeducted||0),0);
   const totalAmt = activeData.reduce((s,r)=>s+(r.amountPaid||0),0);
   const fmt = n => n?`₹${Number(n).toLocaleString("en-IN",{minimumFractionDigits:2})}`:"—";
   const FmtDiff = ({n}) => { if(!n||Math.abs(n)<0.01) return <span className="dz">—</span>; return n>0?<span className="dp">+₹{Math.abs(n).toLocaleString("en-IN",{minimumFractionDigits:2})}</span>:<span className="dn">-₹{Math.abs(n).toLocaleString("en-IN",{minimumFractionDigits:2})}</span>; };
-  const getRC = s=>s==="Matched"?"row-m":s==="Mismatch"?"row-mm":s==="Near Match"?"row-nm":s==="Missing in Books"?"row-mib":s==="Missing TAN"?"row-mt":"row-mia";
-  const getTag = s=>s==="Matched"?"tg-m":s==="Mismatch"?"tg-mm":s==="Near Match"?"tg-nm":s==="Missing in Books"?"tg-mib":s==="Missing TAN"?"tg-mt":"tg-mia";
+  const getRC = s=>s==="Matched"?"row-m":s==="Excess in Books"?"row-mm":s==="Near Match"?"row-nm":s==="Missing in Books"?"row-mib":s==="Missing TAN"?"row-mt":"row-mia";
+  const getTag = s=>s==="Matched"?"tg-m":s==="Excess in Books"?"tg-mm":s==="Near Match"?"tg-nm":s==="Missing in Books"?"tg-mib":s==="Missing TAN"?"tg-mt":"tg-mia";
   const navs = [{id:"dashboard",icon:I.chart,label:"Summary"},{id:"home",icon:I.home,label:"Client Master"},{id:"import",icon:I.import,label:"Import / TRACES",badge:tracesNewFiles.filter(f=>!tracesDismissed.has(f.id)).length||null},{id:"data",icon:I.grid,label:"Data Viewer",badge:totalRecords||null},{id:"recon",icon:I.recon,label:"Reconciliation",badge:reconDone?reconResults.length:null},{id:"tanmaster",icon:I.save,label:"TAN Master",badge:tanMaster.length||null},{id:"backup",icon:I.download,label:"Backup & Restore"},{id:"email",icon:I.mail,label:"TDS Notice",badge:reconDone?(rs.mismatch+rs.mib)||null:null},{id:"reports",icon:I.report,label:"Mismatch Report",badge:reconDone?rs.mismatch+rs.mib:null,soon:!reconDone},{id:"tracker",icon:I.tracker,label:"Email Tracker",badge:emailLog.length||null},{id:"odoolog",icon:I.save,label:"Push Log",badge:odooLog.length||null},{id:"settings",icon:I.settings,label:"Settings",soon:true}];
 
   return (
@@ -4452,13 +4478,12 @@ export default function App() {
                     // Use actual as_tds/bk_tds per status (bk_tds is non-zero even for "Missing in Books"
                     // when TAN exists in Books but with lower amount)
                     const byStatus = (st, field) => selRR.filter(r=>r.matchStatus===st).reduce((s,r)=>s+(r[field]||0),0);
-                    const statuses = ["Matched","Near Match","Mismatch","Missing in Books","Missing in 26AS"];
+                    const statuses = ["Matched","Near Match","Excess in Books","Missing in Books"];
                     const statusMeta = {
                       "Matched":          {col:"var(--grn)", sno:1},
                       "Near Match":       {col:"var(--amb)", sno:2},
-                      "Mismatch":         {col:"var(--red)", sno:3},
+                      "Excess in Books":  {col:"var(--red)", sno:3},
                       "Missing in Books": {col:"var(--pur)", sno:4},
-                      "Missing in 26AS":  {col:"var(--ora)", sno:5},
                     };
                     const detailRows = statuses
                       .map(st => ({
@@ -4526,20 +4551,20 @@ export default function App() {
                               <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
                                 <thead style={{position:"sticky",top:0,zIndex:2}}>
                                   <tr style={{background:"var(--hb)"}}>
-                                    {["#","Client Name","26AS","Books","Matched","Mismatch","MiB","MiA","26AS TDS","Books TDS","Diff","Status"].map(h=>(
+                                    {["#","Client Name","26AS","Books","Matched","Excess in Books","MiB","26AS TDS","Books TDS","Diff","Status"].map(h=>(
                                       <th key={h} style={{padding:"6px 7px",textAlign:h==="#"||h==="Client Name"||h==="Type"?"left":"right",fontSize:9.5,fontWeight:700,color:"var(--tx2)",borderBottom:"2px solid var(--bd)",whiteSpace:"nowrap",background:"var(--hb)"}}>{h}</th>
                                     ))}
                                   </tr>
                                 </thead>
                                 <tbody>
                                   {(()=>{
-                                    if(allActive.length===0) return <tr><td colSpan={13} style={{padding:"24px",textAlign:"center",color:"var(--tx2)",fontSize:12}}>No clients found</td></tr>;
+                                    if(allActive.length===0) return <tr><td colSpan={12} style={{padding:"24px",textAlign:"center",color:"var(--tx2)",fontSize:12}}>No clients found</td></tr>;
                                     let tot26=0,totBk=0,totM=0,totMM=0,totMib=0,totMia=0,tot26T=0,totBkT=0,totD=0;
                                     const trows = allActive.map((c,idx)=>{
                                       const yd=c.years?.[dashFY]; const rr=yd?.reconResults||[];
                                       const r26=yd?.datasets?.["26AS"]?.length||0, rBk=yd?.datasets?.["Books"]?.length||0;
-                                      const matched=rr.filter(r=>r.matchStatus==="Matched").length, mismatch=rr.filter(r=>r.matchStatus==="Mismatch").length;
-                                      const mib=rr.filter(r=>r.matchStatus==="Missing in Books").length, mia=rr.filter(r=>r.matchStatus==="Missing in 26AS").length;
+                                      const matched=rr.filter(r=>r.matchStatus==="Matched").length, mismatch=rr.filter(r=>r.matchStatus==="Excess in Books").length;
+                                      const mib=rr.filter(r=>r.matchStatus==="Missing in Books").length, mia=0;
                                       const tds26=(yd?.datasets?.["26AS"]||[]).reduce((s,r)=>s+(r.tdsDeducted||0),0);
                                       const tdsBk=(yd?.datasets?.["Books"]||[]).reduce((s,r)=>s+(r.tdsDeducted||0),0);
                                       // Use reconResults for diff to match Reconciliation screen; fallback to raw
@@ -4570,7 +4595,6 @@ export default function App() {
                                           <td style={{padding:"6px 7px",textAlign:"right",fontFamily:"Consolas,monospace",fontSize:10,color:matched?"var(--grn)":"var(--tx3)"}}>{yd?.reconDone?matched:"—"}</td>
                                           <td style={{padding:"6px 7px",textAlign:"right",fontFamily:"Consolas,monospace",fontSize:10,color:mismatch>0?"var(--red)":"var(--tx3)",fontWeight:mismatch>0?700:400}}>{yd?.reconDone?mismatch:"—"}</td>
                                           <td style={{padding:"6px 7px",textAlign:"right",fontFamily:"Consolas,monospace",fontSize:10,color:mib>0?"var(--pur)":"var(--tx3)"}}>{yd?.reconDone?mib:"—"}</td>
-                                          <td style={{padding:"6px 7px",textAlign:"right",fontFamily:"Consolas,monospace",fontSize:10,color:mia>0?"var(--ora)":"var(--tx3)"}}>{yd?.reconDone?mia:"—"}</td>
                                           <td style={{padding:"6px 7px",textAlign:"right",fontFamily:"Consolas,monospace",fontSize:9.5,color:tds26?"var(--tx)":"var(--tx3)"}}>{fmtN(tds26)}</td>
                                           <td style={{padding:"6px 7px",textAlign:"right",fontFamily:"Consolas,monospace",fontSize:9.5,color:tdsBk?"var(--tx)":"var(--tx3)"}}>{fmtN(tdsBk)}</td>
                                           <td style={{padding:"6px 7px",textAlign:"right",fontFamily:"Consolas,monospace",fontSize:9.5,fontWeight:600,color:Math.abs(diff)>0?(diff>0?"var(--red)":"var(--grn)"):"var(--tx3)"}}>
@@ -4591,7 +4615,6 @@ export default function App() {
                                         <td style={{padding:"6px 7px",textAlign:"right",fontFamily:"Consolas,monospace",fontSize:10,color:"var(--grn)"}}>{totM||"—"}</td>
                                         <td style={{padding:"6px 7px",textAlign:"right",fontFamily:"Consolas,monospace",fontSize:10,color:totMM>0?"var(--red)":"var(--tx3)",fontWeight:700}}>{totMM||"—"}</td>
                                         <td style={{padding:"6px 7px",textAlign:"right",fontFamily:"Consolas,monospace",fontSize:10,color:totMib>0?"var(--pur)":"var(--tx3)"}}>{totMib||"—"}</td>
-                                        <td style={{padding:"6px 7px",textAlign:"right",fontFamily:"Consolas,monospace",fontSize:10,color:totMia>0?"var(--ora)":"var(--tx3)"}}>{totMia||"—"}</td>
                                         <td style={{padding:"6px 7px",textAlign:"right",fontFamily:"Consolas,monospace",fontSize:9.5}}>₹{tot26T.toLocaleString("en-IN",{maximumFractionDigits:0})}</td>
                                         <td style={{padding:"6px 7px",textAlign:"right",fontFamily:"Consolas,monospace",fontSize:9.5}}>₹{totBkT.toLocaleString("en-IN",{maximumFractionDigits:0})}</td>
                                         <td style={{padding:"6px 7px",textAlign:"right",fontFamily:"Consolas,monospace",fontSize:9.5,color:Math.abs(totD)>1?(totD>0?"var(--red)":"var(--grn)"):"var(--grn)",fontWeight:700}}>
@@ -5610,7 +5633,7 @@ export default function App() {
                               {selDS==="Books"&&<td style={{fontSize:10,fontFamily:"Consolas,monospace"}}>{odooRefData?<span style={{color:"#5c2d91",fontWeight:600}} title={`Created: ${odooRefData.createdAt?.slice(0,10)||"?"}`}>{odooRefData.odooRef||`ID:${odooRefData.moveId}`}</span>:row.journalEntry?<span style={{color:"#5c2d91",fontWeight:500}} title="Synced from Odoo">{row.journalEntry}</span>:<span style={{color:"#ccc"}}>—</span>}</td>}
                               <td>{row.quarter?<span className="tg tg-q">{row.quarter}</span>:"—"}</td>
                               {selDS!=="Books"&&<><td>{row.financialYear||"—"}</td><td><span style={{fontFamily:"Consolas,monospace",fontSize:10,color:row.bookingStatus==="F"?"var(--grn)":"var(--amb)"}}>{row.bookingStatus||"—"}</span></td></>}
-                              <td><span className={`tg ${row.matchStatus==="Matched"?"tg-m":row.matchStatus==="Mismatch"?"tg-mm":"tg-um"}`}>{row.matchStatus}</span></td>
+                              <td><span className={`tg ${row.matchStatus==="Matched"?"tg-m":row.matchStatus==="Excess in Books"?"tg-mm":"tg-um"}`}>{row.matchStatus}</span></td>
                             </tr>
                             );
                           })}
@@ -5649,7 +5672,7 @@ export default function App() {
                 </div>
                 {reconDone&&(
                   <div className="rs-grid">
-                    {[{l:"Total TANs",v:rs.total,c:"blu"},{l:"Matched",v:rs.matched,c:"grn"},{l:"Mismatches",v:rs.mismatch,c:"red"},{l:"Missing in Books",v:rs.mib,c:"pur"},{l:"Missing TAN",v:rs.mt,c:rs.mt>0?"red":"grn"},{l:"TDS Difference",v:(rs.tdsDiff>0?"+":rs.tdsDiff<0?"-":"")+"₹"+Math.abs(rs.tdsDiff).toLocaleString("en-IN",{maximumFractionDigits:0}),c:Math.abs(rs.tdsDiff)>1?"red":"grn"}].map((s,i)=>(
+                    {[{l:"Total TANs",v:rs.total,c:"blu"},{l:"Matched",v:rs.matched,c:"grn"},{l:"Excess in Books",v:rs.mismatch,c:"red"},{l:"Missing in Books",v:rs.mib,c:"pur"},{l:"Missing TAN",v:rs.mt,c:rs.mt>0?"red":"grn"},{l:"TDS Difference",v:(rs.tdsDiff>0?"+":rs.tdsDiff<0?"-":"")+"₹"+Math.abs(rs.tdsDiff).toLocaleString("en-IN",{maximumFractionDigits:0}),c:Math.abs(rs.tdsDiff)>1?"red":"grn"}].map((s,i)=>(
                       <div className={`rs-card ${s.c}`} key={i}><div className="rs-lbl">{s.l}</div><div className={`rs-val ${s.c}`}>{s.v}</div></div>
                     ))}
                   </div>
@@ -5666,7 +5689,7 @@ export default function App() {
                   <div style={{width:1,height:20,background:"var(--bd)",margin:"0 6px"}}/>
                   <span className="rf-lbl">Status:</span>
                   <select className="rf-sel" value={selStatus} onChange={e=>setSelStatus(e.target.value)}>
-                    {["All","Missing TAN","Matched","Near Match","Mismatch","Missing in Books","Missing in 26AS"].map(s=><option key={s} value={s}>{s}{s!=="All"?" ("+(reconMode==="section"?liveSectionResults:liveResults).filter(r=>r.matchStatus===s).length+")":""}</option>)}
+                    {["All","Missing TAN","Matched","Near Match","Excess in Books","Missing in Books"].map(s=><option key={s} value={s}>{s}{s!=="All"?" ("+(reconMode==="section"?liveSectionResults:liveResults).filter(r=>r.matchStatus===s).length+")":""}</option>)}
                   </select>
                   {reconMode==="section"&&(
                     <>
@@ -6024,7 +6047,7 @@ export default function App() {
               const mergedEmails = {...tanMasterEmailMap, ...tanEmails};
               const mergedCCs = {...tanMasterCCMap, ...tanCCs};
               // "TDS Pending" = Books shows MORE TDS than 26AS → deductor deducted but didn't deposit → we need to claim
-              const allMismatch = liveResults.filter(r=>["Mismatch","Missing in Books","Missing in 26AS"].includes(r.matchStatus));
+              const allMismatch = liveResults.filter(r=>["Excess in Books","Missing in Books"].includes(r.matchStatus));
               const pendingRows = emailPendingType==="books_gt_26as"
                 ? allMismatch.filter(r=>(r.bk_tds||0)>(r.as_tds||0))   // Books TDS > 26AS TDS = actual TDS pending
                 : emailPendingType==="untraced_26as"
@@ -6971,7 +6994,7 @@ export default function App() {
                 <div className="rep-sec">
                   <div className="rep-sh"><Ic d={I.chart} s={13} c="var(--a)"/>Summary</div>
                   <div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)"}}>
-                    {[{l:"Total",v:rs.total,c:"var(--tx)"},{l:"Matched",v:rs.matched,c:"var(--grn)"},{l:"Mismatches",v:rs.mismatch,c:"var(--red)"},{l:"Missing in Books",v:rs.mib,c:"var(--pur)"},{l:"TDS Difference",v:(rs.tdsDiff>0?"+":rs.tdsDiff<0?"-":"")+"₹"+Math.abs(rs.tdsDiff).toLocaleString("en-IN",{maximumFractionDigits:0}),c:Math.abs(rs.tdsDiff)>1?"var(--red)":"var(--grn)"}].map((s,i)=>(
+                    {[{l:"Total",v:rs.total,c:"var(--tx)"},{l:"Matched",v:rs.matched,c:"var(--grn)"},{l:"Excess in Books",v:rs.mismatch,c:"var(--red)"},{l:"Missing in Books",v:rs.mib,c:"var(--pur)"},{l:"TDS Difference",v:(rs.tdsDiff>0?"+":rs.tdsDiff<0?"-":"")+"₹"+Math.abs(rs.tdsDiff).toLocaleString("en-IN",{maximumFractionDigits:0}),c:Math.abs(rs.tdsDiff)>1?"var(--red)":"var(--grn)"}].map((s,i)=>(
                       <div key={i} style={{padding:"13px 18px",borderRight:i<4?"1px solid var(--bd)":"none"}}>
                         <div style={{fontSize:10.5,color:"var(--tx2)",textTransform:"uppercase",letterSpacing:"0.4px",marginBottom:3}}>{s.l}</div>
                         <div style={{fontSize:24,fontWeight:300,color:s.c}}>{s.v}</div>
@@ -6980,7 +7003,7 @@ export default function App() {
                   </div>
                 </div>
                 <div className="rep-sec">
-                  <div className="rep-sh"><Ic d={I.warn} s={13} c="var(--red)"/>All Mismatches & Missing Entries ({rs.mismatch+rs.mib} issues)</div>
+                  <div className="rep-sh"><Ic d={I.warn} s={13} c="var(--red)"/>All Excess in Books & Missing Entries ({rs.mismatch+rs.mib} issues)</div>
                   <table className="rep-t">
                     <thead><tr><th>#</th><th>Deductor (26AS)</th><th>TAN</th><th style={{textAlign:"right"}}>26AS TDS</th><th style={{textAlign:"right"}}>Books TDS</th><th style={{textAlign:"right"}}>TDS Diff</th><th>Status</th><th>Reason</th></tr></thead>
                     <tbody>
@@ -7186,7 +7209,7 @@ export default function App() {
             <div className="sti"><Ic d={I.check} s={10} c="rgba(255,255,255,0.75)"/>Ready</div>
             <div className="sti" style={{background:"rgba(255,255,255,0.1)",padding:"0 7px",borderRadius:3}}>{curCompany?.name} · FY {selYear}</div>
             <div className="sti">26AS: {datasets["26AS"].length} · Books: {datasets["Books"].length}</div>
-            {reconDone&&<div className="sti">Matched: {rs.matched} · Mismatches: {rs.mismatch}</div>}
+            {reconDone&&<div className="sti">Matched: {rs.matched} · Excess in Books: {rs.mismatch}</div>}
             <div className="sti" style={{marginLeft:"auto"}}>
               {storageStatus==="saved"&&<span style={{opacity:0.8}}>💾 Saved</span>}
               {storageStatus==="saving"&&<span style={{opacity:0.7}}>⏳ Saving…</span>}
