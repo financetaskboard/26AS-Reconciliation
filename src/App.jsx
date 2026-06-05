@@ -4408,7 +4408,7 @@ export default function App() {
       nameMap[norm].push(r.tan);
     });
     Object.entries(nameMap).forEach(([name, tans]) => {
-      if(tans.length>1) issues.push({ type:"dup_name", tan:tans.join(", "), label:"Multiple TANs — Same Name", detail:`"${name}" has TANs: ${tans.join(", ")}`, severity:"warn" });
+      if(tans.length>1) issues.push({ type:"dup_name", tan:tans.join(", "), tans, name, label:"Multiple TANs — Same Name", detail:`"${name}" has TANs: ${tans.join(", ")}`, severity:"warn" });
     });
     return issues;
   };
@@ -4471,8 +4471,35 @@ export default function App() {
   };
 
   const deleteTanRow = (tan) => {
+    if (!window.confirm(`Delete TAN ${tan} from TAN Master?\n\nThis removes only the TAN Master row. Underlying 26AS / Books data is not touched. You can re-add it later via Rebuild.`)) return;
     setTanMaster(prev => prev.filter(r => r.tan !== tan));
     showToast(`TAN ${tan} removed from TAN Master`, "s");
+  };
+
+  // Manually change/correct a TAN (e.g. to fix a wrong TAN or merge a duplicate
+  // customer into the correct TAN). If the new TAN already exists, the old row
+  // is removed (merge); otherwise the row's TAN field is updated in-place.
+  const modifyTanId = (oldTan, rawNewTan) => {
+    const newTan = String(rawNewTan || "").toUpperCase().trim();
+    if (!newTan || newTan === oldTan) return false;
+    const tanShape = /^[A-Z]{4}[0-9]{5}[A-Z]$/;
+    if (!tanShape.test(newTan)) {
+      if (!window.confirm(`"${newTan}" does not look like a valid TAN format (4 letters + 5 digits + 1 letter, e.g. CALE07783G).\n\nSave anyway?`)) return false;
+    }
+    const collision = tanMaster.find(r => r.tan === newTan);
+    if (collision) {
+      if (!window.confirm(`TAN ${newTan} already exists in TAN Master.\n\nDelete the OLD row (${oldTan}) and keep the existing ${newTan}?\n\nThis cannot be undone.`)) return false;
+      setTanMaster(prev => prev.filter(r => r.tan !== oldTan));
+      showToast(`${oldTan} removed — merged into existing ${newTan}`, "s");
+    } else {
+      if (!window.confirm(`Change TAN from ${oldTan} to ${newTan}?\n\nOnly the TAN Master row is updated. 26AS / Books data keeps the old TAN.`)) return false;
+      setTanMaster(prev => prev.map(r => r.tan === oldTan ? { ...r, tan: newTan } : r));
+      // Migrate any email/CC maps keyed by the old TAN
+      setTanEmails(prev => { if (prev[oldTan] === undefined) return prev; const { [oldTan]:v, ...rest } = prev; return { ...rest, [newTan]: v }; });
+      setTanCCs(prev => { if (prev[oldTan] === undefined) return prev; const { [oldTan]:v, ...rest } = prev; return { ...rest, [newTan]: v }; });
+      showToast(`TAN updated: ${oldTan} → ${newTan}`, "s");
+    }
+    return true;
   };
 
   const updateTanContact = (tan, field, val) => {
@@ -7046,11 +7073,31 @@ export default function App() {
                         <span style={{marginLeft:"auto",fontSize:11,fontWeight:400,color:"#a08060"}}>{issuesOpen?"▲ Hide":"▼ Show"}</span>
                       </div>
                       {issuesOpen&&(
-                        <div style={{padding:"0 14px 10px",maxHeight:120,overflowY:"auto",display:"flex",flexWrap:"wrap",gap:6}}>
+                        <div style={{padding:"0 14px 10px",maxHeight:160,overflowY:"auto",display:"flex",flexWrap:"wrap",gap:6}}>
                           {dups.map((d,i)=>(
-                            <div key={i} style={{background:d.severity==="error"?"#fde8e8":"#fff3e0",border:`1px solid ${d.severity==="error"?"#f0c4b4":"#ffe0b2"}`,borderRadius:4,padding:"5px 10px",fontSize:11}}>
-                              <span style={{fontWeight:700,color:d.severity==="error"?"#a80000":"#c7792a"}}>{d.label}:</span>{" "}
-                              <span style={{fontFamily:"Consolas,monospace",color:"#0078d4"}}>{d.tan}</span>{" — "}{d.detail}
+                            <div key={i} style={{background:d.severity==="error"?"#fde8e8":"#fff3e0",border:`1px solid ${d.severity==="error"?"#f0c4b4":"#ffe0b2"}`,borderRadius:4,padding:"5px 10px",fontSize:11,display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
+                              <span style={{fontWeight:700,color:d.severity==="error"?"#a80000":"#c7792a"}}>{d.label}:</span>
+                              {d.type==="dup_name" && Array.isArray(d.tans) ? (
+                                <>
+                                  <span style={{color:"#5c4030"}}>"{d.name}"</span>
+                                  <span style={{color:"#a08060"}}>—</span>
+                                  {d.tans.map((t,j)=>(
+                                    <span key={j} style={{display:"inline-flex",alignItems:"center",gap:3,background:"#fff",border:"1px solid #e0c8a8",borderRadius:3,padding:"1px 3px 1px 6px"}}>
+                                      <span style={{fontFamily:"Consolas,monospace",color:"#0078d4",fontSize:11}}>{t}</span>
+                                      <button onClick={()=>{ setTanSearch(t); }} title={`Find ${t} in table below`} style={{border:"none",background:"transparent",color:"#0078d4",cursor:"pointer",padding:"0 2px",fontSize:11}}>🔍</button>
+                                      <button onClick={()=>deleteTanRow(t)} title={`Delete ${t}`} style={{border:"none",background:"#fde8e8",color:"#a80000",cursor:"pointer",padding:"1px 5px",borderRadius:2,fontSize:10,fontWeight:700}}>✕</button>
+                                    </span>
+                                  ))}
+                                </>
+                              ) : (
+                                <>
+                                  <span style={{fontFamily:"Consolas,monospace",color:"#0078d4"}}>{d.tan}</span>
+                                  <span>— {d.detail}</span>
+                                  {d.type==="dup_tan" && (
+                                    <button onClick={()=>deleteTanRow(d.tan)} title={`Delete ${d.tan}`} style={{border:"none",background:"#fde8e8",color:"#a80000",cursor:"pointer",padding:"1px 6px",borderRadius:2,fontSize:10,fontWeight:700}}>✕ Delete</button>
+                                  )}
+                                </>
+                              )}
                             </div>
                           ))}
                         </div>
@@ -7074,7 +7121,7 @@ export default function App() {
                       <table className="dg">
                         <thead><tr>
                           <th style={{width:44}}>S.No</th>
-                          <th style={{width:120}}>TAN</th>
+                          <th style={{width:130}}>TAN <span style={{fontWeight:400,fontSize:10,color:"var(--a)"}}>(editable)</span></th>
                           <th style={{width:200}}>Name as per 26AS</th>
                           <th style={{width:200}}>Name as per Books</th>
                           <th style={{width:180}}>Final Name <span style={{fontWeight:400,fontSize:10,color:"var(--a)"}}>(editable)</span></th>
@@ -7082,7 +7129,7 @@ export default function App() {
                           <th style={{width:200}}>CC Email <span style={{fontWeight:400,fontSize:10,color:"var(--a)"}}>(optional)</span></th>
                           <th style={{width:180}}>CSM Name <span style={{fontWeight:400,fontSize:10,color:"var(--a)"}}>(editable)</span></th>
                           <th style={{width:260}}>Odoo Partner ID <span style={{fontWeight:400,fontSize:10,color:"#c7792a"}}>(for journal export)</span></th>
-                          <th style={{width:50,textAlign:"center"}}>Del</th>
+                          <th style={{width:60,textAlign:"center",position:"sticky",right:0,background:"var(--bg2,#f3f2f1)",boxShadow:"-2px 0 4px rgba(0,0,0,0.04)",zIndex:2}}>Actions</th>
                         </tr></thead>
                         <tbody>
                           {tanMaster.filter(r=>!tanSearch||[r.tan,r.name26AS,r.nameBooks,r.finalName,r.contactEmail,r.ccEmail,r.csmName].some(v=>String(v||"").toLowerCase().includes(tanSearch.toLowerCase()))).map((row,i)=>{
@@ -7099,7 +7146,22 @@ export default function App() {
                             return (
                             <tr key={row.tan}>
                               <td style={{color:"#aaa",textAlign:"center"}}>{row.sno}</td>
-                              <td><span style={{fontFamily:"Consolas,monospace",fontSize:11,color:"var(--a)",fontWeight:600}}>{row.tan}</span></td>
+                              <td>
+                                <input
+                                  defaultValue={row.tan}
+                                  key={`tan-${row.tan}`}
+                                  onBlur={e=>{
+                                    const v=e.target.value.toUpperCase().trim();
+                                    if(v===row.tan){ e.target.value=row.tan; return; }
+                                    const ok=modifyTanId(row.tan, v);
+                                    if(!ok) e.target.value=row.tan;
+                                  }}
+                                  onKeyDown={e=>{ if(e.key==="Enter") e.target.blur(); if(e.key==="Escape"){ e.target.value=row.tan; e.target.blur(); } }}
+                                  title="Click to edit TAN. Press Enter to save, Esc to cancel."
+                                  style={{width:"100%",border:"1px solid transparent",borderRadius:3,padding:"3px 7px",fontSize:11,fontFamily:"Consolas,monospace",color:"var(--a)",fontWeight:600,background:"transparent",outline:"none",textTransform:"uppercase"}}
+                                  onFocus={e=>{e.target.style.border="1px solid var(--a)";e.target.style.background="var(--wh)";}}
+                                />
+                              </td>
                               <td style={{color:"var(--tx2)"}}>{row.name26AS||<span style={{color:"var(--tx3)",fontStyle:"italic"}}>—</span>}</td>
                               <td style={{color:"var(--tx2)"}}>{row.nameBooks||<span style={{color:"var(--tx3)",fontStyle:"italic"}}>Not in Books</span>}</td>
                               <td>
@@ -7127,8 +7189,8 @@ export default function App() {
                               <td>
                                 <input value={row.odooPartnerId||""} onChange={e=>updateTanContact(row.tan,"odooPartnerId",e.target.value)} placeholder="__export__.res_partner_..." style={{width:"100%",border:`1px solid ${row.odooPartnerId?"#c7792a":"transparent"}`,borderRadius:3,padding:"3px 7px",fontSize:10.5,fontFamily:"Consolas,monospace",color:"#c7792a",background:"transparent",outline:"none"}} onFocus={e=>{e.target.style.border="1px solid var(--a)";e.target.style.background="var(--wh)";}} onBlur={e=>{e.target.style.border=`1px solid ${row.odooPartnerId?"#c7792a":"transparent"}`;e.target.style.background="transparent";}}/>
                               </td>
-                              <td style={{textAlign:"center"}}>
-                                <button onClick={()=>deleteTanRow(row.tan)} title={`Delete ${row.tan}`} className="fdb" style={{padding:"3px 6px",borderRadius:3}}><Ic d={I.close} s={11} c="var(--red)"/></button>
+                              <td style={{textAlign:"center",position:"sticky",right:0,background:"var(--wh,#fff)",boxShadow:"-2px 0 4px rgba(0,0,0,0.04)",zIndex:1}}>
+                                <button onClick={()=>deleteTanRow(row.tan)} title={`Delete ${row.tan} from TAN Master`} className="fdb" style={{padding:"4px 10px",borderRadius:3,display:"inline-flex",alignItems:"center",gap:4,fontSize:11,color:"var(--red)",border:"1px solid transparent"}} onMouseEnter={e=>e.currentTarget.style.border="1px solid var(--red)"} onMouseLeave={e=>e.currentTarget.style.border="1px solid transparent"}><Ic d={I.trash} s={12} c="var(--red)"/>Delete</button>
                               </td>
                             </tr>
                             );
