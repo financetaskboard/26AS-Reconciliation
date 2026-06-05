@@ -4502,6 +4502,47 @@ export default function App() {
     return true;
   };
 
+  // ── REMAP TAN IN SOURCE DATA ─────────────────────────────────────────────
+  // Replaces every occurrence of `oldTan` with `newTan` across the selected
+  // dataset(s). This is what fixes the "26AS has the right TAN but Books has
+  // a wrong/old TAN" reconciliation breakage that happens when Odoo's partner
+  // record carries an outdated TAN.
+  const remapTanInDatasets = (oldTan, newTan, scopes) => {
+    const oldT = String(oldTan||"").toUpperCase().trim();
+    const newT = String(newTan||"").toUpperCase().trim();
+    if (!oldT || !newT) { showToast("Both old and new TAN are required","w"); return 0; }
+    if (newT === oldT) { showToast("Old and new TAN are the same","w"); return 0; }
+    const tanShape = /^[A-Z]{4}[0-9]{5}[A-Z]$/;
+    if (!tanShape.test(newT)) {
+      if (!window.confirm(`"${newT}" does not look like a valid TAN (4 letters + 5 digits + 1 letter).\n\nProceed anyway?`)) return 0;
+    }
+    // First pass: count how many rows will change in each chosen dataset
+    const counts = {};
+    let total = 0;
+    ["26AS","AIS","Books","Invoices"].forEach(ds => {
+      if (!scopes[ds]) return;
+      const c = (datasets[ds]||[]).filter(r => (r.tan||"").toUpperCase().trim() === oldT).length;
+      counts[ds] = c;
+      total += c;
+    });
+    if (total === 0) { showToast(`No rows found with TAN ${oldT} in selected datasets`,"w"); return 0; }
+    // Second pass: apply
+    setDatasets(prev => {
+      const out = {...prev};
+      Object.keys(counts).forEach(ds => {
+        if (counts[ds] === 0) return;
+        out[ds] = (prev[ds]||[]).map(r => (r.tan||"").toUpperCase().trim() === oldT ? {...r, tan: newT} : r);
+      });
+      return out;
+    });
+    // Stale: reconciliation must be re-run with the corrected TANs
+    setReconDone(false);
+    const summary = Object.entries(counts).filter(([_,c])=>c>0).map(([ds,c])=>`${ds}: ${c}`).join(" · ");
+    showToast(`✅ ${oldT} → ${newT} · ${total} row${total!==1?"s":""} updated (${summary}). Re-run Reconcile.`,"s");
+    addLog?.(`🔁 TAN remap: ${oldT} → ${newT} in ${summary}`, "s");
+    return total;
+  };
+
   const updateTanContact = (tan, field, val) => {
     setTanMaster(prev => prev.map(r => r.tan === tan ? { ...r, [field]: val } : r));
     // If email updated, sync to tanEmails map so TDS Notice picks it up immediately
@@ -4832,6 +4873,8 @@ export default function App() {
   const [showMissingTanModal, setShowMissingTanModal] = useState(false);
   const [missingTanEdits, setMissingTanEdits] = useState({});
   const [missingTanSearch, setMissingTanSearch] = useState("");
+  // Remap TAN dialog: { oldTan, newTan, scopes:{ "26AS":bool, AIS:bool, Books:bool, Invoices:bool } }
+  const [remapTanDlg, setRemapTanDlg] = useState(null);
 
   const addManualTan = (partyName, tan) => {
     const normTAN = tan.trim().toUpperCase();
@@ -6752,7 +6795,11 @@ export default function App() {
                               <td><input type="checkbox" className="cb3" checked={selRows.has(row.id)} onChange={()=>toggleRow(row.id)} onClick={e=>e.stopPropagation()}/></td>
                               <td style={{color:"#aaa"}}>{row.id}</td>
                               <td title={row.deductorName} style={{fontWeight:500}}>{row.deductorName||"—"}</td>
-                              <td><span style={{fontFamily:"Consolas,monospace",color:"var(--a)",fontSize:11}}>{row.tan||"—"}</span></td>
+                              <td><span
+                                  onClick={e=>{ e.stopPropagation(); if(row.tan){ setRemapTanDlg({ oldTan: row.tan, newTan:"", scopes:{ "26AS":selDS==="26AS", AIS:selDS==="AIS", Books:selDS==="Books", Invoices:selDS==="Invoices" } }); } }}
+                                  title={row.tan?`Click to remap ${row.tan} to a different TAN (fixes wrong TANs in source data)`:"No TAN on this row"}
+                                  style={{fontFamily:"Consolas,monospace",color:"var(--a)",fontSize:11,cursor:row.tan?"pointer":"default",borderBottom:row.tan?"1px dotted var(--a)":"none",paddingBottom:1}}
+                                >{row.tan||"—"}</span></td>
                               <td>{row.section?<span className="tg tg-sec">{row.section}</span>:"—"}</td>
                               <td className="num">{fmt(row.amountPaid)}</td>
                               <td className="num" style={{color:"#a80000"}}>{fmt(row.tdsDeducted)}</td>
@@ -8825,6 +8872,116 @@ export default function App() {
                     <button onClick={()=>document.getElementById("missing-tan-import-input").click()} style={{background:"#0078d4",color:"#fff",border:"none",borderRadius:4,padding:"7px 14px",cursor:"pointer",fontSize:12,fontFamily:"inherit",fontWeight:600,display:"flex",alignItems:"center",gap:5}}><Ic d={I.import} s={12} c="#fff"/>Import Filled Excel</button>
                     <button onClick={()=>{setShowMissingTanModal(false);setMissingTanSearch("");}} style={{background:"var(--a)",color:"#fff",border:"none",borderRadius:4,padding:"7px 22px",cursor:"pointer",fontSize:13,fontFamily:"inherit",fontWeight:600}}>Close</button>
                   </div>
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* ── REMAP TAN MODAL ── */}
+        {remapTanDlg&&(()=>{
+          const dlg = remapTanDlg;
+          const setDlg = (patch) => setRemapTanDlg(p => p?{...p, ...patch}:p);
+          const setScope = (ds, val) => setRemapTanDlg(p => p?{...p, scopes:{...p.scopes, [ds]:val}}:p);
+          const oldT = (dlg.oldTan||"").toUpperCase().trim();
+          const newT = (dlg.newTan||"").toUpperCase().trim();
+          // Live preview counts
+          const previewCounts = {};
+          ["26AS","AIS","Books","Invoices"].forEach(ds => {
+            previewCounts[ds] = (datasets[ds]||[]).filter(r => (r.tan||"").toUpperCase().trim() === oldT).length;
+          });
+          const selectedTotal = Object.entries(previewCounts).reduce((s,[ds,c]) => s + (dlg.scopes[ds]?c:0), 0);
+          const close = () => setRemapTanDlg(null);
+          // Detect if newT already exists in any dataset (sanity hint)
+          const newExistsIn = ["26AS","AIS","Books","Invoices"].filter(ds => newT && (datasets[ds]||[]).some(r => (r.tan||"").toUpperCase().trim() === newT));
+          // Suggest TAN Master entry name match for the old TAN (heuristic)
+          const masterMatch = tanMaster.find(m => m.tan === oldT);
+          const apply = () => {
+            const n = remapTanInDatasets(oldT, newT, dlg.scopes);
+            if (n > 0) close();
+          };
+          return (
+            <div className="modal-bg" onClick={close}>
+              <div onClick={e=>e.stopPropagation()} style={{background:"var(--wh)",borderRadius:8,padding:0,width:560,maxWidth:"92vw",boxShadow:"0 8px 40px rgba(0,0,0,0.25)",overflow:"hidden"}}>
+                <div style={{padding:"18px 22px 14px",borderBottom:"1px solid var(--bd,#eee)",display:"flex",alignItems:"center",gap:12}}>
+                  <div style={{width:38,height:38,borderRadius:7,background:"#e6f3fb",display:"flex",alignItems:"center",justifyContent:"center",fontSize:20,flexShrink:0}}>🔁</div>
+                  <div style={{flex:1}}>
+                    <div style={{fontSize:15,fontWeight:700}}>Remap TAN in source data</div>
+                    <div style={{fontSize:11.5,color:"var(--tx2)",marginTop:2}}>Replace a wrong/old TAN with the correct one across selected datasets. This fixes reconciliation when 26AS and Books carry different TANs for the same customer.</div>
+                  </div>
+                  <button onClick={close} style={{background:"none",border:"none",cursor:"pointer",padding:6,borderRadius:4,color:"var(--tx3)",fontSize:20,lineHeight:1}}>✕</button>
+                </div>
+                <div style={{padding:"18px 22px"}}>
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 30px 1fr",gap:12,alignItems:"end",marginBottom:14}}>
+                    <div>
+                      <div style={{fontSize:11,fontWeight:600,color:"var(--tx2)",marginBottom:5,textTransform:"uppercase",letterSpacing:0.3}}>Old TAN (wrong)</div>
+                      <input
+                        value={dlg.oldTan||""}
+                        onChange={e=>setDlg({oldTan:e.target.value})}
+                        placeholder="CALV02217F"
+                        style={{width:"100%",padding:"8px 10px",border:"1px solid var(--bd,#ccc)",borderRadius:4,fontFamily:"Consolas,monospace",fontSize:12.5,color:"#a80000",fontWeight:600,textTransform:"uppercase",background:"#fef4f4"}}
+                      />
+                    </div>
+                    <div style={{textAlign:"center",fontSize:20,color:"var(--tx3)",paddingBottom:6}}>→</div>
+                    <div>
+                      <div style={{fontSize:11,fontWeight:600,color:"var(--tx2)",marginBottom:5,textTransform:"uppercase",letterSpacing:0.3}}>New TAN (correct)</div>
+                      <input
+                        list="remap-tan-suggestions"
+                        value={dlg.newTan||""}
+                        onChange={e=>setDlg({newTan:e.target.value})}
+                        placeholder="CALE07783G"
+                        autoFocus
+                        style={{width:"100%",padding:"8px 10px",border:"1px solid var(--bd,#ccc)",borderRadius:4,fontFamily:"Consolas,monospace",fontSize:12.5,color:"var(--grn)",fontWeight:600,textTransform:"uppercase",background:"#f0fdf0"}}
+                      />
+                      <datalist id="remap-tan-suggestions">
+                        {tanMaster.filter(m=>m.tan!==oldT).map(m=>(
+                          <option key={m.tan} value={m.tan}>{m.finalName||m.name26AS||m.nameBooks||""}</option>
+                        ))}
+                      </datalist>
+                    </div>
+                  </div>
+
+                  {masterMatch&&(
+                    <div style={{padding:"7px 11px",background:"#fff8e1",border:"1px solid #ffe082",borderRadius:4,fontSize:11.5,color:"#795548",marginBottom:12}}>
+                      ⚠️ <strong>{oldT}</strong> is in TAN Master as <strong>"{masterMatch.finalName||masterMatch.name26AS||masterMatch.nameBooks||"(unnamed)"}"</strong>. Remapping will leave that master entry orphaned — consider deleting it from TAN Master afterwards.
+                    </div>
+                  )}
+
+                  <div style={{fontSize:11,fontWeight:600,color:"var(--tx2)",marginBottom:6,textTransform:"uppercase",letterSpacing:0.3}}>Apply to datasets</div>
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:14}}>
+                    {["26AS","AIS","Books","Invoices"].map(ds=>{
+                      const c = previewCounts[ds];
+                      const dis = c === 0;
+                      return (
+                        <label key={ds} style={{display:"flex",alignItems:"center",gap:9,padding:"9px 12px",border:`1px solid ${dlg.scopes[ds]&&c>0?"var(--a)":"var(--bd,#e0e0e0)"}`,borderRadius:5,background:dis?"#fafafa":(dlg.scopes[ds]?"#e6f3fb":"var(--wh)"),cursor:dis?"not-allowed":"pointer",opacity:dis?0.55:1}}>
+                          <input type="checkbox" disabled={dis} checked={!!dlg.scopes[ds]&&c>0} onChange={e=>setScope(ds,e.target.checked)} style={{width:14,height:14,accentColor:"var(--a)",cursor:dis?"not-allowed":"pointer"}}/>
+                          <div style={{flex:1,minWidth:0}}>
+                            <div style={{fontSize:12,fontWeight:600,color:dis?"var(--tx3)":"var(--tx)"}}>{ds}</div>
+                            <div style={{fontSize:10.5,color:dis?"var(--tx3)":"var(--tx2)",fontFamily:"Consolas,monospace",marginTop:1}}>{c} row{c!==1?"s":""} match{c===1?"es":""}</div>
+                          </div>
+                        </label>
+                      );
+                    })}
+                  </div>
+
+                  {newT&&newExistsIn.length>0&&(
+                    <div style={{padding:"7px 11px",background:"#e6f3fb",border:"1px solid #bcdcf5",borderRadius:4,fontSize:11.5,color:"#0050a0",marginBottom:12}}>
+                      ℹ️ <strong>{newT}</strong> already exists in: <strong>{newExistsIn.join(", ")}</strong>. After remap, the old + new rows will share this TAN (good — reconciliation will then match them).
+                    </div>
+                  )}
+
+                  <div style={{padding:"10px 13px",background:selectedTotal>0?"#f0fdf0":"#fafafa",border:`1px solid ${selectedTotal>0?"#b8dfb8":"#e0e0e0"}`,borderRadius:5,fontSize:12,color:"var(--tx)"}}>
+                    {selectedTotal>0
+                      ? <><strong style={{color:"var(--grn)"}}>{selectedTotal}</strong> row{selectedTotal!==1?"s":""} will be updated:&nbsp;<span style={{fontFamily:"Consolas,monospace",color:"#a80000",fontWeight:600}}>{oldT||"—"}</span>&nbsp;→&nbsp;<span style={{fontFamily:"Consolas,monospace",color:"var(--grn)",fontWeight:600}}>{newT||"(enter new TAN)"}</span></>
+                      : <span style={{color:"var(--tx3)"}}>Select at least one dataset with matching rows.</span>}
+                  </div>
+                </div>
+                <div style={{padding:"12px 22px 16px",display:"flex",justifyContent:"flex-end",gap:8,borderTop:"1px solid var(--bd,#eee)"}}>
+                  <button onClick={close} style={{padding:"7px 18px",borderRadius:4,border:"1px solid var(--bd,#ccc)",background:"var(--wh)",color:"var(--tx)",cursor:"pointer",fontSize:12.5,fontFamily:"inherit"}}>Cancel</button>
+                  <button onClick={apply} disabled={!oldT||!newT||selectedTotal===0||oldT===newT}
+                    style={{padding:"7px 22px",borderRadius:4,border:"none",background:(!oldT||!newT||selectedTotal===0||oldT===newT)?"#bcbcbc":"var(--a)",color:"#fff",cursor:(!oldT||!newT||selectedTotal===0||oldT===newT)?"not-allowed":"pointer",fontSize:12.5,fontFamily:"inherit",fontWeight:600}}>
+                    Apply Remap
+                  </button>
                 </div>
               </div>
             </div>
