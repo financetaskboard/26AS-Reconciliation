@@ -1862,6 +1862,72 @@ function copyInv(invNo, btn) {
     w.document.close();
   };
 
+  // Download the on-screen Books + 26AS breakdown as a 2-sheet Excel,
+  // mirroring exactly what the user sees in the modal (same rows, same order,
+  // same columns). Adds a small summary header on each sheet for context.
+  const downloadModalExcel = () => {
+    if (!bk.length && !as.length) { alert("Nothing to export."); return; }
+    const deductor = (tanRow?.as_name || tanRow?.bk_name || "").trim();
+    const safeName = (deductor||tan).replace(/[^a-zA-Z0-9]/g,"_").slice(0,40);
+    const wb = XLSX.utils.book_new();
+    const matchStatus = tanRow?.matchStatus || "";
+    const diffVal = (asTDS - bkTDS);
+
+    // ─ Books sheet ────────────────────────────────────────────────────────
+    const bkHeader = [
+      ["TAN", tan, "Deductor", deductor],
+      ["Status", matchStatus, "Entries (Books)", bk.length],
+      ["Total TDS (Books)", bkTDS, "Total TDS (26AS)", asTDS],
+      ["Diff (26AS − Books)", diffVal, "", ""],
+      [],
+      ["#", "Date", "Invoice / Label", "Section", "Qtr", "TDS"]
+    ];
+    const bkRows = bk.map((r,i)=>[
+      i+1,
+      r.invoiceDate||r.date||"",
+      r.invoiceNo||"",
+      r.section||"",
+      r.quarter||"",
+      r.tdsDeducted||0
+    ]);
+    const wsBk = XLSX.utils.aoa_to_sheet([...bkHeader, ...bkRows]);
+    wsBk["!cols"] = [{wch:6},{wch:13},{wch:24},{wch:10},{wch:8},{wch:14}];
+
+    // ─ 26AS sheet ──────────────────────────────────────────────────────────
+    const asHeader = [
+      ["TAN", tan, "Deductor", deductor],
+      ["Status", matchStatus, "Entries (26AS)", as.length],
+      ["Total TDS (26AS)", asTDS, "Total TDS Deposited", as.reduce((s,r)=>s+(r.tdsDeposited||r.tdsDeducted||0),0)],
+      ["Diff (26AS − Books)", diffVal, "", ""],
+      [],
+      ["#", "Date", "Section", "Qtr", "Amount", "TDS Deducted", "TDS Deposited", "B.Status", "Invoice No (link)"]
+    ];
+    const asRows = as.map((r,i)=>[
+      i+1,
+      r.date||"",
+      r.section||"",
+      r.quarter||"",
+      r.amountPaid||0,
+      r.tdsDeducted||0,
+      r.tdsDeposited||r.tdsDeducted||0,
+      r.bookingStatus||"",
+      (invoiceLinks?.[r.id] || r.invoiceNo || "")
+    ]);
+    const wsAs = XLSX.utils.aoa_to_sheet([...asHeader, ...asRows]);
+    wsAs["!cols"] = [{wch:6},{wch:13},{wch:10},{wch:8},{wch:14},{wch:14},{wch:14},{wch:10},{wch:22}];
+
+    XLSX.utils.book_append_sheet(wb, wsBk, "Books");
+    XLSX.utils.book_append_sheet(wb, wsAs, "26AS");
+
+    const buf = XLSX.write(wb, {bookType:"xlsx", type:"array"});
+    const blob = new Blob([buf], {type:"application/octet-stream"});
+    const fileName = `${tan}_${safeName}_recon.xlsx`;
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = fileName;
+    a.click();
+  };
+
   // Export unmatched 26AS rows — supports multiple invoices per row with proportional TDS split
   const exportUnbooked = () => {
     const matchedAsIds = new Set(groups.flatMap(g=>[...g.asIds]));
@@ -2242,6 +2308,7 @@ Log saved - check Push Log tab`
               <button onClick={()=>{setSelBk(new Set());setSelAs(new Set());}} style={{padding:"4px 10px",fontSize:11,border:"1px solid var(--bd)",borderRadius:3,cursor:"pointer",background:"var(--sur)",color:"var(--tx2)",fontFamily:"inherit"}}>Deselect All</button>
             )}
             <button onClick={autoMatch} style={{padding:"4px 10px",fontSize:11,border:"1px solid var(--bd)",borderRadius:3,cursor:"pointer",background:"var(--sur)",color:"var(--tx)",fontFamily:"inherit",fontWeight:600}}>⚡ Auto-Match</button>
+            <button onClick={downloadModalExcel} title="Download this view (Books + 26AS) as Excel — same format as on screen" style={{padding:"4px 10px",fontSize:11,border:"1px solid #217346",borderRadius:3,cursor:"pointer",background:"#e8f8e8",color:"#217346",fontFamily:"inherit",fontWeight:600,display:"flex",alignItems:"center",gap:4}}>📥 Excel</button>
             {groups.length>0 && <button onClick={clearAll} style={{padding:"4px 10px",fontSize:11,border:"1px solid #fde7e9",borderRadius:3,cursor:"pointer",background:"#fff8f8",color:"var(--red)",fontFamily:"inherit"}}>✕ Clear All</button>}
             {unbookedCount>0 && (() => {
               const linkedCount = as.filter(r => !matchedAsIds.has(r.id) && (invoiceLinks[r.id]||r.invoiceNo||'').trim()).length;
@@ -5011,13 +5078,13 @@ export default function App() {
     else { const a=document.createElement("a"); a.href=URL.createObjectURL(new Blob([csv],{type:"text/csv"})); a.download=`26AS_${selDS}_Export.csv`; a.click(); showToast(`Exported ${data.length} records`); }
   };
 
-  const downloadTabExcel = async (tabName) => {
+  const downloadTabExcel = async (tabName, rowsOverride, fileSuffix) => {
     const wb = XLSX.utils.book_new();
     const companyName = curCompany?.name || 'Export';
     const fy = selYear || '';
 
     if (tabName === '26AS' || tabName === 'AIS') {
-      const data = datasets[tabName] || [];
+      const data = rowsOverride ?? (datasets[tabName] || []);
       if (!data.length) { showToast(`No ${tabName} data to download`, 'w'); return; }
       const headers = ['#', 'Deductor Name', 'TAN', 'Section', 'Amount Paid', 'TDS Deducted', 'TDS Deposited', 'Trans. Date', 'Quarter', 'Financial Year', 'Booking Status', 'Match Status'];
       const rows = data.map((r, i) => [
@@ -5031,7 +5098,7 @@ export default function App() {
       XLSX.utils.book_append_sheet(wb, ws, tabName);
 
     } else if (tabName === 'Books') {
-      const data = datasets['Books'] || [];
+      const data = rowsOverride ?? (datasets['Books'] || []);
       if (!data.length) { showToast('No Books data to download', 'w'); return; }
       const invLookup = {};
       (datasets['Invoices'] || []).forEach(inv => { const k = (inv.invoiceNo || '').trim().toUpperCase(); if (k) invLookup[k] = inv; });
@@ -5057,7 +5124,7 @@ export default function App() {
       XLSX.utils.book_append_sheet(wb, ws, 'Books');
 
     } else if (tabName === 'Invoices') {
-      const data = datasets['Invoices'] || [];
+      const data = rowsOverride ?? (datasets['Invoices'] || []);
       if (!data.length) { showToast('No Invoice data to download', 'w'); return; }
       const booksData = datasets['Books'] || [];
       const headers = ['S.No.', 'Name of Client', 'Invoice No.', 'Invoice Date', 'Taxable Value', 'Amount Due', 'Booked TDS', 'TDS %', 'Status', 'Odoo Ref'];
@@ -5085,13 +5152,15 @@ export default function App() {
 
     const buf = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
     const blob = new Blob([buf], { type: 'application/octet-stream' });
-    const fileName = `${companyName.replace(/[^a-zA-Z0-9]/g, '_')}_${tabName}_FY${fy}.xlsx`;
+    const sfx = fileSuffix ? `_${fileSuffix}` : '';
+    const fileName = `${companyName.replace(/[^a-zA-Z0-9]/g, '_')}_${tabName}${sfx}_FY${fy}.xlsx`;
+    const exportedCount = rowsOverride ? rowsOverride.length : (tabName === 'Invoices' ? (datasets['Invoices'] || []).length : (datasets[tabName] || []).length);
     if (isElectron) {
       const reader = new FileReader(); reader.readAsDataURL(blob);
-      reader.onload = async () => { const b64 = reader.result.split(',')[1]; const res = await window.electronAPI.saveFile({ defaultName: fileName, content: b64, isBase64: true }); if (res.success) showToast(`Exported: ${res.path}`); };
+      reader.onload = async () => { const b64 = reader.result.split(',')[1]; const res = await window.electronAPI.saveFile({ defaultName: fileName, content: b64, isBase64: true }); if (res.success) showToast(`Exported ${exportedCount} row${exportedCount!==1?'s':''}: ${res.path}`); };
     } else {
       const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = fileName; a.click();
-      showToast(`✅ ${tabName} exported — ${tabName === 'Invoices' ? (datasets['Invoices'] || []).length : (datasets[tabName] || []).length} records`, 's');
+      showToast(`✅ ${tabName} exported — ${exportedCount} record${exportedCount!==1?'s':''}${fileSuffix?` (${fileSuffix.replace(/_/g,' ')})`:''}`, 's');
     }
   };
 
@@ -6643,25 +6712,63 @@ export default function App() {
                     {searchQ&&<span onClick={()=>setSearchQ("")} style={{cursor:"pointer",color:"#999",fontSize:11}}>✕</span>}
                   </div>
                   <div className="rc">{selDS==="Invoices"?`${(datasets["Invoices"]||[]).length} invoices`:(filtered.length!==activeData.length?`${filtered.length} of ${activeData.length}`:`${activeData.length} records`)}{selRows.size>0&&` · ${selRows.size} selected`}</div>
-                  <button
-                    onClick={()=>downloadTabExcel(selDS)}
-                    disabled={selDS==="Invoices"?(datasets["Invoices"]||[]).length===0:!activeData.length}
-                    title={`Download ${selDS} as Excel`}
-                    style={{
-                      display:"flex",alignItems:"center",gap:4,
-                      padding:"3px 10px",marginLeft:4,
-                      borderRadius:3,
-                      border:"1px solid var(--bd)",
-                      background:(selDS==="Invoices"?(datasets["Invoices"]||[]).length>0:activeData.length>0)?"#e8f8e8":"var(--sur)",
-                      color:(selDS==="Invoices"?(datasets["Invoices"]||[]).length>0:activeData.length>0)?"#107c10":"var(--tx3)",
-                      cursor:(selDS==="Invoices"?(datasets["Invoices"]||[]).length>0:activeData.length>0)?"pointer":"not-allowed",
-                      fontSize:11.5,fontFamily:"inherit",fontWeight:600,
-                      transition:"all 0.15s"
-                    }}
-                  >
-                    <Ic d={I.download} s={12} c={(selDS==="Invoices"?(datasets["Invoices"]||[]).length>0:activeData.length>0)?"#107c10":"#ccc"}/>
-                    Excel
-                  </button>
+                  {(()=>{
+                    const isInv = selDS==="Invoices";
+                    const visibleCount = isInv ? (datasets["Invoices"]||[]).length : filtered.length;
+                    const totalCount = isInv ? (datasets["Invoices"]||[]).length : activeData.length;
+                    const hasFilter = !isInv && visibleCount !== totalCount;
+                    const enabled = totalCount > 0;
+                    const onDownloadVisible = () => {
+                      if (isInv) { downloadTabExcel(selDS); return; }
+                      const suffix = hasFilter ? (searchQ ? `search_${searchQ.replace(/[^a-zA-Z0-9]/g,'').slice(0,20)}` : (showDupOnly?"duplicates":"filtered")) : null;
+                      downloadTabExcel(selDS, hasFilter ? filtered : undefined, suffix);
+                    };
+                    return (
+                      <div style={{display:"flex",alignItems:"center",marginLeft:4}}>
+                        <button
+                          onClick={onDownloadVisible}
+                          disabled={!enabled}
+                          title={hasFilter
+                            ? `Download the ${visibleCount} visible row${visibleCount!==1?"s":""} (matches current search/filter) as Excel — same columns as on screen`
+                            : `Download all ${totalCount} ${selDS} row${totalCount!==1?"s":""} as Excel`}
+                          style={{
+                            display:"flex",alignItems:"center",gap:4,
+                            padding:"3px 10px",
+                            borderRadius:hasFilter?"3px 0 0 3px":3,
+                            border:"1px solid var(--bd)",
+                            borderRight:hasFilter?"none":"1px solid var(--bd)",
+                            background:enabled?"#e8f8e8":"var(--sur)",
+                            color:enabled?"#107c10":"var(--tx3)",
+                            cursor:enabled?"pointer":"not-allowed",
+                            fontSize:11.5,fontFamily:"inherit",fontWeight:600,
+                            transition:"all 0.15s"
+                          }}
+                        >
+                          <Ic d={I.download} s={12} c={enabled?"#107c10":"#ccc"}/>
+                          Excel{hasFilter?` (${visibleCount})`:""}
+                        </button>
+                        {hasFilter&&(
+                          <button
+                            onClick={()=>downloadTabExcel(selDS)}
+                            disabled={!enabled}
+                            title={`Download ALL ${totalCount} rows (ignore current filter)`}
+                            style={{
+                              padding:"3px 8px",
+                              borderRadius:"0 3px 3px 0",
+                              border:"1px solid var(--bd)",
+                              background:enabled?"var(--wh)":"var(--sur)",
+                              color:enabled?"var(--tx2)":"var(--tx3)",
+                              cursor:enabled?"pointer":"not-allowed",
+                              fontSize:11,fontFamily:"inherit",
+                              borderLeft:"1px solid #d0d0d0"
+                            }}
+                          >
+                            All
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })()}
                   {selDS==="Books"&&dupInvoiceNos.size>0&&(
                     <button
                       onClick={()=>setShowDupOnly(p=>!p)}
