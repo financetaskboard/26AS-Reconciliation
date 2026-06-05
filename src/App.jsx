@@ -1862,62 +1862,116 @@ function copyInv(invNo, btn) {
     w.document.close();
   };
 
-  // Download the on-screen Books + 26AS breakdown as a 2-sheet Excel,
-  // mirroring exactly what the user sees in the modal (same rows, same order,
-  // same columns). Adds a small summary header on each sheet for context.
+  // Download the on-screen Books + 26AS breakdown as a SINGLE-SHEET Excel,
+  // laid out side-by-side exactly like the modal: Books on the left (columns
+  // A–F), 26AS on the right (columns H–P), with a one-column spacer in between.
   const downloadModalExcel = () => {
     if (!bk.length && !as.length) { alert("Nothing to export."); return; }
     const deductor = (tanRow?.as_name || tanRow?.bk_name || "").trim();
     const safeName = (deductor||tan).replace(/[^a-zA-Z0-9]/g,"_").slice(0,40);
-    const wb = XLSX.utils.book_new();
     const matchStatus = tanRow?.matchStatus || "";
-    const diffVal = (asTDS - bkTDS);
+    const diffVal = asTDS - bkTDS;
 
-    // ─ Books sheet ────────────────────────────────────────────────────────
-    const bkHeader = [
-      ["TAN", tan, "Deductor", deductor],
-      ["Status", matchStatus, "Entries (Books)", bk.length],
-      ["Total TDS (Books)", bkTDS, "Total TDS (26AS)", asTDS],
-      ["Diff (26AS − Books)", diffVal, "", ""],
-      [],
-      ["#", "Date", "Invoice / Label", "Section", "Qtr", "TDS"]
-    ];
-    const bkRows = bk.map((r,i)=>[
-      i+1,
-      r.invoiceDate||r.date||"",
-      r.invoiceNo||"",
-      r.section||"",
-      r.quarter||"",
-      r.tdsDeducted||0
+    const data = [];
+    // Row 1 — TAN + Deductor (merged title)
+    data.push([`TAN ${tan} · ${deductor}`, "","","","","",  "",  "","","","","","","","",""]);
+    // Row 2 — Status + summary numbers (merged title)
+    data.push([
+      `Status: ${matchStatus}  ·  Books TDS: ₹${bkTDS.toLocaleString("en-IN",{minimumFractionDigits:2})}  ·  26AS TDS: ₹${asTDS.toLocaleString("en-IN",{minimumFractionDigits:2})}  ·  Diff (26AS−Books): ₹${diffVal.toLocaleString("en-IN",{minimumFractionDigits:2})}`,
+      "","","","","",  "",  "","","","","","","","",""
     ]);
-    const wsBk = XLSX.utils.aoa_to_sheet([...bkHeader, ...bkRows]);
-    wsBk["!cols"] = [{wch:6},{wch:13},{wch:24},{wch:10},{wch:8},{wch:14}];
-
-    // ─ 26AS sheet ──────────────────────────────────────────────────────────
-    const asHeader = [
-      ["TAN", tan, "Deductor", deductor],
-      ["Status", matchStatus, "Entries (26AS)", as.length],
-      ["Total TDS (26AS)", asTDS, "Total TDS Deposited", as.reduce((s,r)=>s+(r.tdsDeposited||r.tdsDeducted||0),0)],
-      ["Diff (26AS − Books)", diffVal, "", ""],
-      [],
-      ["#", "Date", "Section", "Qtr", "Amount", "TDS Deducted", "TDS Deposited", "B.Status", "Invoice No (link)"]
-    ];
-    const asRows = as.map((r,i)=>[
-      i+1,
-      r.date||"",
-      r.section||"",
-      r.quarter||"",
-      r.amountPaid||0,
-      r.tdsDeducted||0,
-      r.tdsDeposited||r.tdsDeducted||0,
-      r.bookingStatus||"",
-      (invoiceLinks?.[r.id] || r.invoiceNo || "")
+    // Row 3 — blank spacer
+    data.push(Array(16).fill(""));
+    // Row 4 — section headers (will be merged)
+    data.push([
+      `📗 BOOKS TRANSACTIONS — ${bk.length} entries`, "","","","","",
+      "",
+      `📘 26AS TRANSACTIONS — ${as.length} entries`, "","","","","","","",""
     ]);
-    const wsAs = XLSX.utils.aoa_to_sheet([...asHeader, ...asRows]);
-    wsAs["!cols"] = [{wch:6},{wch:13},{wch:10},{wch:8},{wch:14},{wch:14},{wch:14},{wch:10},{wch:22}];
+    // Row 5 — column headers
+    data.push([
+      "#", "Date", "Invoice / Label", "Section", "Qtr", "TDS",
+      "",
+      "#", "Date", "Section", "Qtr", "Amount", "TDS Deducted", "TDS Deposited", "B.Status", "Invoice No"
+    ]);
 
-    XLSX.utils.book_append_sheet(wb, wsBk, "Books");
-    XLSX.utils.book_append_sheet(wb, wsAs, "26AS");
+    // Data rows — pair by index, fill blanks where one side runs out
+    const maxLen = Math.max(bk.length, as.length);
+    for (let i = 0; i < maxLen; i++) {
+      const r = bk[i];
+      const ar = as[i];
+      data.push([
+        r ? i+1 : "",
+        r ? (r.invoiceDate || r.date || "") : "",
+        r ? (r.invoiceNo || "") : "",
+        r ? (r.section || "") : "",
+        r ? (r.quarter || "") : "",
+        r ? (r.tdsDeducted || 0) : "",
+        "",
+        ar ? i+1 : "",
+        ar ? (ar.date || "") : "",
+        ar ? (ar.section || "") : "",
+        ar ? (ar.quarter || "") : "",
+        ar ? (ar.amountPaid || 0) : "",
+        ar ? (ar.tdsDeducted || 0) : "",
+        ar ? (ar.tdsDeposited || ar.tdsDeducted || 0) : "",
+        ar ? (ar.bookingStatus || "") : "",
+        ar ? (invoiceLinks?.[ar.id] || ar.invoiceNo || "") : ""
+      ]);
+    }
+
+    // Footer row — totals (mirrors the modal-ft strip)
+    data.push([
+      "Total TDS (Books)", "","","","", bkTDS,
+      "",
+      "Total TDS (26AS)", "","","","", asTDS, "","",""
+    ]);
+
+    const ws = XLSX.utils.aoa_to_sheet(data);
+
+    // Column widths matching on-screen layout
+    ws["!cols"] = [
+      {wch:5},   // A  #
+      {wch:13},  // B  Date
+      {wch:24},  // C  Invoice / Label
+      {wch:10},  // D  Section
+      {wch:6},   // E  Qtr
+      {wch:14},  // F  TDS
+      {wch:2},   // G  spacer
+      {wch:5},   // H  #
+      {wch:13},  // I  Date
+      {wch:10},  // J  Section
+      {wch:6},   // K  Qtr
+      {wch:14},  // L  Amount
+      {wch:14},  // M  TDS Deducted
+      {wch:14},  // N  TDS Deposited
+      {wch:10},  // O  B.Status
+      {wch:22}   // P  Invoice No
+    ];
+
+    // Merge title rows + the two section header bars
+    ws["!merges"] = [
+      { s:{r:0,c:0}, e:{r:0,c:15} },   // Title spans full width
+      { s:{r:1,c:0}, e:{r:1,c:15} },   // Summary spans full width
+      { s:{r:3,c:0}, e:{r:3,c:5} },    // "BOOKS TRANSACTIONS" header → A4:F4
+      { s:{r:3,c:7}, e:{r:3,c:15} },   // "26AS TRANSACTIONS"   header → H4:P4
+      { s:{r:data.length-1,c:0}, e:{r:data.length-1,c:4} },  // "Total TDS (Books)" label A:E in footer
+      { s:{r:data.length-1,c:7}, e:{r:data.length-1,c:11} }  // "Total TDS (26AS)"  label H:L in footer
+    ];
+
+    // Number formats for TDS / amount columns + freeze the header row
+    const inr = '#,##0.00';
+    const setNumFmt = (col) => {
+      for (let row = 5; row < data.length; row++) {
+        const ref = XLSX.utils.encode_cell({r:row, c:col});
+        if (ws[ref] && typeof ws[ref].v === "number") ws[ref].z = inr;
+      }
+    };
+    [5, 11, 12, 13].forEach(setNumFmt); // F (Books TDS), L (Amt), M (TDS Ded), N (TDS Dep)
+    ws["!freeze"] = { xSplit: 0, ySplit: 5 };
+
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Reconciliation");
 
     const buf = XLSX.write(wb, {bookType:"xlsx", type:"array"});
     const blob = new Blob([buf], {type:"application/octet-stream"});
