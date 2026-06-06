@@ -1075,6 +1075,7 @@ const css = `
   .row-reversed td{background:#F3F3F3!important;color:#909090!important;text-decoration:line-through}
   .row-reversed td:first-child{border-left:3px solid #909090;text-decoration:none}
   .row-reversed .rev-badge{display:inline-block;padding:1px 6px;border-radius:3px;background:#909090;color:#fff;font-size:9px;font-weight:700;letter-spacing:0.3px;text-decoration:none;margin-left:5px;vertical-align:middle}
+  .excess-tds-badge{display:inline-block;padding:1px 6px;border-radius:3px;background:#E07F00;color:#fff;font-size:9px;font-weight:700;letter-spacing:0.3px;margin-left:5px;vertical-align:middle}
   .tg-sec{background:var(--pur-lt);color:var(--pur)}
   .tg-q{background:var(--grn-lt);color:var(--grn)}
   .tg-src{background:var(--sur3);color:var(--tx2)}
@@ -2433,6 +2434,7 @@ Log saved - check Push Log tab`
                           <td style={{fontSize:11,maxWidth:150,overflow:"hidden",textOverflow:"ellipsis",...cellStyle}} title={r.invoiceNo}>
                             <span style={{display:"flex",alignItems:"center",gap:4}}>
                               <span style={{color:reversed?"#909090":"var(--a)",overflow:"hidden",textOverflow:"ellipsis"}}>{r.invoiceNo||"—"}</span>
+                              {r.manualJV&&<span style={{flexShrink:0,fontSize:8,fontWeight:700,padding:"1px 5px",borderRadius:2,background:"#E07F00",color:"#fff",letterSpacing:0.3}} title={`Manual JV (no invoice). Label: ${r.manualJvLabel||"Excess TDS"}`}>📝 EXCESS TDS</span>}
                               {isDupInv&&!reversed&&<span style={{flexShrink:0,fontSize:8,fontWeight:700,padding:"1px 4px",borderRadius:2,background:"#d59300",color:"#fff",letterSpacing:0.3}}>DUP</span>}
                               {reversed&&<span style={{flexShrink:0,fontSize:8,fontWeight:700,padding:"1px 5px",borderRadius:2,background:"#909090",color:"#fff",letterSpacing:0.3,textDecoration:"none"}} title={`Reversal ref: ${reversedEntries[getReversalKey(r)]?.reversalRef||"manual"}`}>↶ REVERSED</span>}
                               {onMarkReversed && (r.journalEntry||r.id) && (reversed
@@ -4452,6 +4454,41 @@ export default function App() {
         if (month >= 10 && month <= 12) return 'Q3';
         return 'Q4';
       };
+
+      // ── Auto-populate reversedEntries map from Odoo flags ──
+      // odooAPI.js detectReversedMoves attaches `reversed: true` and
+      // `reversal_ref: "TDS/2024/3493"` to each record whose Odoo journal entry
+      // has been reversed via the "Reverse Entry" wizard (and the reversal is
+      // posted). We merge those into the persistent reversedEntries map keyed
+      // by journalEntry — the same key isRowReversed() uses. Existing manual
+      // marks are preserved; only entries with source==='odoo' get refreshed.
+      const odooReversals = odooRecords.filter(r => r.reversed && r.journalEntry);
+      if (odooReversals.length > 0) {
+        let added = 0;
+        setReversedEntries(prev => {
+          const next = { ...prev };
+          odooReversals.forEach(r => {
+            const k = (r.journalEntry || '').trim();
+            if (!k) return;
+            const existing = next[k];
+            // Preserve manual marks; only overwrite our own previous odoo marks
+            if (existing && existing.source === 'manual') return;
+            if (!existing) added++;
+            next[k] = {
+              reversalRef: (r.reversal_ref || '').trim(),
+              note: 'Auto-detected from Odoo (Reverse Entry wizard)',
+              source: 'odoo',
+              markedAt: new Date().toISOString(),
+            };
+          });
+          return next;
+        });
+        addLog?.(`↶ Auto-marked ${added} new reversed entr${added===1?'y':'ies'} from Odoo (${odooReversals.length} total)`);
+      }
+      const manualJvCount = odooRecords.filter(r => r.manualJV).length;
+      if (manualJvCount > 0) {
+        addLog?.(`📝 Included ${manualJvCount} manual JV entr${manualJvCount===1?'y':'ies'} (Excess TDS / adjustments)`);
+      }
       
       const booksData = odooRecords.map(record => ({
         deductorName: record.deductorName || '',
@@ -4464,7 +4501,11 @@ export default function App() {
         quarter: record.quarter || calculateQuarter(record.date),
         source: 'Odoo ERP',
         journalEntry: record.journalEntry || '',
-        odooCompany: record.odooCompany || ''
+        odooCompany: record.odooCompany || '',
+        // Preserve flags from odooAPI.js so the Data Viewer + TAN modal can
+        // render badges and reconciliation can skip reversed rows.
+        ...(record.manualJV ? { manualJV: true, manualJvLabel: record.manualJvLabel || 'Manual JV' } : {}),
+        ...(record.reversed ? { reversed: true, reversal_ref: record.reversal_ref || '' } : {})
       }));
       
       // ── STEP 1: Snapshot existing Books rows that already have a TAN assigned ──
@@ -7002,7 +7043,7 @@ export default function App() {
                               style={isRowReversed(row)?{}:(isDup&&!selRows.has(row.id)?{background:"#fff8e8"}:{})}>
                               <td><input type="checkbox" className="cb3" checked={selRows.has(row.id)} onChange={()=>toggleRow(row.id)} onClick={e=>e.stopPropagation()}/></td>
                               <td style={{color:"#aaa"}}>{row.id}</td>
-                              <td title={row.deductorName} style={{fontWeight:500}}>{row.deductorName||"—"}{isRowReversed(row)&&<span className="rev-badge" title={`Reversed: ${reversedEntries[getRowReversalKey(row)]?.reversalRef||"manual"}`}>↶ REVERSED</span>}</td>
+                              <td title={row.deductorName} style={{fontWeight:500}}>{row.deductorName||"—"}{row.manualJV&&<span className="excess-tds-badge" title={`Manual JV (no invoice). Label: ${row.manualJvLabel||"Excess TDS"}`}>📝 EXCESS TDS</span>}{isRowReversed(row)&&<span className="rev-badge" title={`Reversed: ${reversedEntries[getRowReversalKey(row)]?.reversalRef||"manual"}`}>↶ REVERSED</span>}</td>
                               <td><span
                                   onClick={e=>{ e.stopPropagation(); if(row.tan){ setRemapTanDlg({ oldTan: row.tan, newTan:"", scopes:{ "26AS":selDS==="26AS", AIS:selDS==="AIS", Books:selDS==="Books", Invoices:selDS==="Invoices" } }); } }}
                                   title={row.tan?`Click to remap ${row.tan} to a different TAN (fixes wrong TANs in source data)`:"No TAN on this row"}
