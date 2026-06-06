@@ -274,6 +274,32 @@ export function getCompanyPrefixes(companyName) {
   return [];
 }
 
+/**
+ * Keywords to match an Odoo `account.move.line.company_id` against our local
+ * company. Used as a FALLBACK when a TDS line has no recognised invoice
+ * prefix (typical for manual JVs like "Excess TDS" adjustments that aren't
+ * tied to a customer invoice).
+ *
+ * Add a case here when onboarding a new company.
+ */
+export function getOdooCompanyKeywords(companyName) {
+  const normalized = companyName.toLowerCase();
+
+  if (normalized.includes('ginni') || normalized.includes('gsl')) {
+    return ['ginni', 'gsl'];
+  }
+
+  if (normalized.includes('easemy') || normalized.includes('emg')) {
+    return ['easemy', 'emg'];
+  }
+
+  if (normalized.includes('browntape') || normalized.includes('bt')) {
+    return ['browntape'];
+  }
+
+  return [];
+}
+
 export function getFYDates(fyYear) {
   const [startYear] = fyYear.split('-');
   const start = `${startYear}-04-01`;
@@ -511,18 +537,46 @@ export async function syncTDSFromOdoo(company, fyYear, onProgress = () => {}) {
     console.log(`[Odoo Sync] Read ${tdsLines.length} TDS lines (first 2):`, tdsLines.slice(0, 2));
     onProgress('read_complete', 'Processing records...', tdsLines.length);
     
-    // Step 4: Filter by company prefixes
+    // Step 4: Filter — primary match by invoice prefix; fall back to
+    //                  company_id for manual JVs (e.g. Excess TDS adjustments
+    //                  that have no SWB/SHR/etc. invoice reference).
+    const companyKeywords = getOdooCompanyKeywords(company.name);
+    let manualJvCount = 0;
+    
     const filteredLines = tdsLines.filter(line => {
       const invoiceRef = line.name || '';
       const prefix = invoiceRef.split('/')[0].toUpperCase();
-      const matches = companyPrefixes.includes(prefix);
-      if (!matches) {
-        console.log(`[Odoo Sync] Filtering out: ${invoiceRef} (prefix: ${prefix})`);
+      
+      // Pass 1: known invoice prefix → regular Books entry.
+      if (companyPrefixes.includes(prefix)) {
+        line._isManualJV = false;
+        return true;
       }
-      return matches;
+      
+      // Pass 2: no recognised prefix → may still belong to us if the line's
+      // company_id matches. Used for manual JVs ("Excess TDS", adjustments).
+      if (companyKeywords.length > 0) {
+        const odooCompanyName = (Array.isArray(line.company_id) ? line.company_id[1] : '') || '';
+        const odooCompanyLower = odooCompanyName.toLowerCase();
+        const companyMatches = companyKeywords.some(kw => odooCompanyLower.includes(kw));
+        
+        if (companyMatches) {
+          line._isManualJV = true;
+          manualJvCount++;
+          const partnerName = (Array.isArray(line.partner_id) ? line.partner_id[1] : '') || '(no partner)';
+          console.log(`[Odoo Sync] ✓ Included manual JV: "${invoiceRef || '(unlabelled)'}" · ${partnerName} · debit ₹${line.debit}`);
+          return true;
+        }
+      }
+      
+      console.log(`[Odoo Sync] Filtering out: ${invoiceRef} (prefix: ${prefix})`);
+      return false;
     });
     
-    console.log(`[Odoo Sync] Filtered to ${filteredLines.length} records for ${company.name}`);
+    console.log(`[Odoo Sync] Filtered to ${filteredLines.length} records for ${company.name}${manualJvCount > 0 ? ` (incl. ${manualJvCount} manual JV)` : ''}`);
+    if (manualJvCount > 0) {
+      onProgress('manual_jv', `Included ${manualJvCount} manual JV line(s) (excess TDS / adjustments)`, manualJvCount);
+    }
     onProgress('filter_complete', `Filtered to ${filteredLines.length} records for ${company.name}`, filteredLines.length);
     
     if (filteredLines.length === 0) {
@@ -537,6 +591,17 @@ export async function syncTDSFromOdoo(company, fyYear, onProgress = () => {}) {
     
     for (let i = 0; i < filteredLines.length; i++) {
       const line = filteredLines[i];
+      
+      // Manual JVs may have no partner set. Skip the debtor lookup — there's
+      // nothing to match in that case, invoiceAmount stays 0.
+      const hasPartner = Array.isArray(line.partner_id) && line.partner_id.length >= 1;
+      if (!hasPartner) {
+        enrichedData.push({ ...line, invoiceAmount: 0 });
+        if ((i + 1) % 10 === 0 || i === filteredLines.length - 1) {
+          onProgress('amounts_progress', `Processing ${i + 1} of ${filteredLines.length}...`, i + 1);
+        }
+        continue;
+      }
       
       // FIXED: Use debtorAccountId instead of code
       const debtorDomain = [
@@ -625,9 +690,11 @@ export async function syncTDSFromOdoo(company, fyYear, onProgress = () => {}) {
       try {
         const journalEntry = (Array.isArray(line.move_id) ? line.move_id[1] : '') || '';
         const reversalRef = journalEntry ? reversalMap[journalEntry] : undefined;
+        const partnerName = (Array.isArray(line.partner_id) ? line.partner_id[1] : '') || '';
+        const odooCompany = (Array.isArray(line.company_id) ? line.company_id[1] : '') || '';
 
         const record = {
-          deductorName: line.partner_id[1] || '',
+          deductorName: partnerName,
           tan: '',
           amount: line.invoiceAmount,
           tdsDeducted: line.debit || 0,
@@ -637,7 +704,16 @@ export async function syncTDSFromOdoo(company, fyYear, onProgress = () => {}) {
           quarter: calculateQuarter(line.date),
           source: 'Odoo ERP',
           journalEntry,
-          odooCompany: line.company_id[1] || '',
+          odooCompany,
+          // NEW — Excess TDS / manual JVs (no recognised invoice prefix,
+          // included via company_id fallback). Frontend renders an "EXCESS
+          // TDS" badge so these are not mistaken for ordinary invoice rows.
+          ...(line._isManualJV
+            ? {
+                manualJV: true,
+                manualJvLabel: (line.name && line.name.trim()) || 'Manual JV',
+              }
+            : {}),
           // NEW — set only when Odoo's "Reverse Entry" wizard has been used
           // and the reversal is posted. Frontend uses these to auto-populate
           // its reversedEntries map (see reversal-aware reconciliation).
@@ -656,10 +732,15 @@ export async function syncTDSFromOdoo(company, fyYear, onProgress = () => {}) {
     });
     
     const reversedInData = booksData.filter(r => r.reversed).length;
-    console.log(`[Odoo Sync] ✅ Successfully synced ${booksData.length} records${reversedInData>0?` (${reversedInData} marked as reversed)`:''}`);
+    const manualJvInData = booksData.filter(r => r.manualJV).length;
+    const extras = [];
+    if (reversedInData > 0) extras.push(`${reversedInData} reversed`);
+    if (manualJvInData > 0) extras.push(`${manualJvInData} manual JV`);
+    const extrasStr = extras.length > 0 ? ` (${extras.join(', ')})` : '';
+    console.log(`[Odoo Sync] ✅ Successfully synced ${booksData.length} records${extrasStr}`);
     console.log('[Odoo Sync] First 3 records:', booksData.slice(0, 3));
 
-    onProgress('complete', `✅ Synced ${booksData.length} records${reversedInData>0?` · ${reversedInData} reversed`:''}`, booksData.length);
+    onProgress('complete', `✅ Synced ${booksData.length} records${extrasStr}`, booksData.length);
 
     return booksData;
     
@@ -679,6 +760,7 @@ export default {
   syncTDSFromOdoo,
   identifyCompanyFromInvoice,
   getCompanyPrefixes,
+  getOdooCompanyKeywords,
   getFYDates,
   calculateQuarter
 };
