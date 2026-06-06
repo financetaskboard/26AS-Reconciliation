@@ -313,6 +313,90 @@ async function getAccountIdByCode(url, database, uid, apiKey, accountCode) {
 }
 
 /**
+ * Detect which moves in our result set have been reversed in Odoo.
+ *
+ * Returns a map keyed by ORIGINAL MOVE NAME (e.g. "TDS/2024/2601") whose
+ * value is the REVERSAL MOVE NAME (e.g. "TDS/2024/3493"). Only counts
+ * reversals that are themselves posted; ignores draft and cancelled reversals.
+ *
+ * Handles "reversal-of-reversal" — if B reverses A and C reverses B (all
+ * posted), A is back in play and is NOT included in the result.
+ *
+ * Detects reversals created via Odoo's "Reverse Entry" wizard, which sets
+ * `reversed_entry_id` on the new move. Manual contra-entries (where the user
+ * passes their own JV without using the wizard) won't be detected here —
+ * those still need the frontend's manual "↶ Mark Rev" button.
+ *
+ * Safe to fail: if reversed_entry_id isn't queryable (very old Odoo, custom
+ * builds), returns {} and the sync continues without reversal detection.
+ */
+async function detectReversedMoves(url, database, uid, apiKey, moveIds) {
+  if (!moveIds || moveIds.length === 0) return {};
+
+  try {
+    // First-level: find every POSTED move that reverses any move in our set.
+    // reversed_entry_id is a many2one, returned by Odoo as [id, name].
+    const reversals = await searchReadOdoo(
+      url, database, uid, apiKey,
+      'account.move',
+      [
+        ['reversed_entry_id', 'in', moveIds],
+        ['state', '=', 'posted']
+      ],
+      ['id', 'name', 'reversed_entry_id']
+    );
+
+    if (reversals.length === 0) return {};
+
+    // Build the candidate map: original-name -> reversal-name
+    const reversalMap = {};
+    reversals.forEach(rev => {
+      if (Array.isArray(rev.reversed_entry_id) && rev.reversed_entry_id.length >= 2) {
+        const origName = rev.reversed_entry_id[1];
+        if (origName) reversalMap[origName] = rev.name;
+      }
+    });
+
+    // Second pass: handle reversal-of-reversal (un-reversal). If reversal B
+    // has itself been reversed by C, original A is back in play.
+    const reversalIds = reversals.map(r => r.id).filter(Boolean);
+    if (reversalIds.length > 0) {
+      try {
+        const counterReversals = await searchReadOdoo(
+          url, database, uid, apiKey,
+          'account.move',
+          [
+            ['reversed_entry_id', 'in', reversalIds],
+            ['state', '=', 'posted']
+          ],
+          ['name', 'reversed_entry_id']
+        );
+
+        counterReversals.forEach(cr => {
+          if (Array.isArray(cr.reversed_entry_id) && cr.reversed_entry_id.length >= 2) {
+            const reversedReversalName = cr.reversed_entry_id[1];
+            // Walk the map and drop any original whose reversal was itself reversed
+            for (const origName of Object.keys(reversalMap)) {
+              if (reversalMap[origName] === reversedReversalName) {
+                console.log(`[Odoo Sync] ↺ Reversal-of-reversal: ${origName} → ${reversedReversalName} (now un-reversed by ${cr.name})`);
+                delete reversalMap[origName];
+              }
+            }
+          }
+        });
+      } catch (e) {
+        console.warn('[Odoo Sync] Counter-reversal pass failed (non-fatal):', e.message);
+      }
+    }
+
+    return reversalMap;
+  } catch (e) {
+    console.warn('[Odoo Sync] Reversal detection failed (non-fatal — continuing without it):', e.message);
+    return {};
+  }
+}
+
+/**
  * Sync TDS Books data from Odoo ERP
  * 
  * CORRECTED: Now searches by account_id (integer) instead of account_id.code
@@ -510,11 +594,38 @@ export async function syncTDSFromOdoo(company, fyYear, onProgress = () => {}) {
     
     // Step 6: Transform to Books Format
     onProgress('transform', 'Transforming data...', enrichedData.length);
-    
+
     console.log(`[Odoo Sync] Transforming ${enrichedData.length} records...`);
-    
+
+    // Step 6a: Detect reversed entries before final transformation, so each
+    // record can carry the reversed flag. Single-pass, two XML-RPC calls max
+    // (first-level + counter-reversal). Falls back safely on any error.
+    onProgress('reversals', 'Checking for reversed entries...', 0);
+    const uniqueMoveIds = [...new Set(
+      enrichedData
+        .map(l => Array.isArray(l.move_id) ? l.move_id[0] : null)
+        .filter(Boolean)
+    )];
+    const reversalMap = await detectReversedMoves(
+      company.odooUrl,
+      company.odooDatabase,
+      uid,
+      company.odooPassword,
+      uniqueMoveIds
+    );
+    const reversedCount = Object.keys(reversalMap).length;
+    if (reversedCount > 0) {
+      console.log(`[Odoo Sync] ↶ Detected ${reversedCount} reversed move(s):`, reversalMap);
+      onProgress('reversals_complete', `Detected ${reversedCount} reversed entr${reversedCount===1?'y':'ies'}`, reversedCount);
+    } else {
+      console.log('[Odoo Sync] No reversed entries detected');
+    }
+
     const booksData = enrichedData.map((line, idx) => {
       try {
+        const journalEntry = (Array.isArray(line.move_id) ? line.move_id[1] : '') || '';
+        const reversalRef = journalEntry ? reversalMap[journalEntry] : undefined;
+
         const record = {
           deductorName: line.partner_id[1] || '',
           tan: '',
@@ -525,14 +636,18 @@ export async function syncTDSFromOdoo(company, fyYear, onProgress = () => {}) {
           invoiceNo: line.name || '',
           quarter: calculateQuarter(line.date),
           source: 'Odoo ERP',
-          journalEntry: line.move_id[1] || '',
-          odooCompany: line.company_id[1] || ''
+          journalEntry,
+          odooCompany: line.company_id[1] || '',
+          // NEW — set only when Odoo's "Reverse Entry" wizard has been used
+          // and the reversal is posted. Frontend uses these to auto-populate
+          // its reversedEntries map (see reversal-aware reconciliation).
+          ...(reversalRef ? { reversed: true, reversal_ref: reversalRef } : {})
         };
-        
+
         if (idx === 0) {
           console.log('[Odoo Sync] Sample transformed record:', record);
         }
-        
+
         return record;
       } catch (error) {
         console.error(`[Odoo Sync] Error transforming record:`, error, line);
@@ -540,11 +655,12 @@ export async function syncTDSFromOdoo(company, fyYear, onProgress = () => {}) {
       }
     });
     
-    console.log(`[Odoo Sync] ✅ Successfully synced ${booksData.length} records`);
+    const reversedInData = booksData.filter(r => r.reversed).length;
+    console.log(`[Odoo Sync] ✅ Successfully synced ${booksData.length} records${reversedInData>0?` (${reversedInData} marked as reversed)`:''}`);
     console.log('[Odoo Sync] First 3 records:', booksData.slice(0, 3));
-    
-    onProgress('complete', `✅ Synced ${booksData.length} records`, booksData.length);
-    
+
+    onProgress('complete', `✅ Synced ${booksData.length} records${reversedInData>0?` · ${reversedInData} reversed`:''}`, booksData.length);
+
     return booksData;
     
   } catch (error) {
