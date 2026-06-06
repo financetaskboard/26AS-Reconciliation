@@ -259,7 +259,7 @@ export function identifyCompanyFromInvoice(invoiceRef) {
 export function getCompanyPrefixes(companyName) {
   const normalized = companyName.toLowerCase();
   
-  if (normalized.includes('ginni') || normalized.includes('gsl')) {
+  if (normalized.includes('ginni') || normalized.includes('gsl') || normalized.includes('ginesys')) {
     return ['SMH', 'SWB', 'STN', 'SHR', 'SKN', 'SOH'];
   }
   
@@ -285,8 +285,9 @@ export function getCompanyPrefixes(companyName) {
 export function getOdooCompanyKeywords(companyName) {
   const normalized = companyName.toLowerCase();
 
-  if (normalized.includes('ginni') || normalized.includes('gsl')) {
-    return ['ginni', 'gsl'];
+  if (normalized.includes('ginni') || normalized.includes('gsl') || normalized.includes('ginesys')) {
+    // Odoo shows this company as "Ginesys"
+    return ['ginesys', 'ginni', 'gsl'];
   }
 
   if (normalized.includes('easemy') || normalized.includes('emg')) {
