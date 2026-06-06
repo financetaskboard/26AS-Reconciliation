@@ -1072,6 +1072,9 @@ const css = `
   .row-mt td{background:#FEF7F7}
   .row-resolved td{background:#ECFDF5!important}
   .row-resolved td:first-child{border-left:3px solid var(--grn)}
+  .row-reversed td{background:#F3F3F3!important;color:#909090!important;text-decoration:line-through}
+  .row-reversed td:first-child{border-left:3px solid #909090;text-decoration:none}
+  .row-reversed .rev-badge{display:inline-block;padding:1px 6px;border-radius:3px;background:#909090;color:#fff;font-size:9px;font-weight:700;letter-spacing:0.3px;text-decoration:none;margin-left:5px;vertical-align:middle}
   .tg-sec{background:var(--pur-lt);color:var(--pur)}
   .tg-q{background:var(--grn-lt);color:var(--grn)}
   .tg-src{background:var(--sur3);color:var(--tx2)}
@@ -1629,7 +1632,7 @@ const css = `
 `;
 
 // ── TAN DETAIL MODAL ──────────────────────────────────────────────────────────
-function TanDetailModal({ tan, tanRow, txns26AS, txnsBooks, txnsInvoices, onClose, fmt, FmtDiff, odooUrl, odooConfig, tanMaster, odooRefs, setOdooRefs, setOdooLog }) {
+function TanDetailModal({ tan, tanRow, txns26AS, txnsBooks, txnsInvoices, onClose, fmt, FmtDiff, odooUrl, odooConfig, tanMaster, odooRefs, setOdooRefs, setOdooLog, reversedEntries, onMarkReversed, onUnmarkReversed, getReversalKey }) {
   const as = txns26AS.filter(r => r.tan?.toUpperCase().trim() === tan);
 
   // Expand Books rows — Odoo may store combined invoice refs joined by '.'
@@ -1644,8 +1647,17 @@ function TanDetailModal({ tan, tanRow, txns26AS, txnsBooks, txnsInvoices, onClos
     return parts.map((p, i) => ({ ...r, id: r.id + '_' + i, invoiceNo: p, tdsDeducted: tdsEach }));
   });
 
+  // Helper: is a row marked reversed?
+  const isReversed = (r) => {
+    if (!reversedEntries || !getReversalKey) return false;
+    const k = getReversalKey(r);
+    return !!(k && reversedEntries[k]);
+  };
+
   const asTDS = as.reduce((s,r)=>s+(r.tdsDeducted||0),0);
-  const bkTDS = bk.reduce((s,r)=>s+(r.tdsDeducted||0),0);
+  // Total Books TDS excludes any row that has been marked as reversed
+  const bkTDS = bk.reduce((s,r)=>s + (isReversed(r) ? 0 : (r.tdsDeducted||0)), 0);
+  const reversedBkTDS = bk.reduce((s,r)=>s + (isReversed(r) ? (r.tdsDeducted||0) : 0), 0);
   const diff = asTDS - bkTDS;
 
   // ── Matching state ──────────────────────────────────────────────────────────
@@ -2399,30 +2411,39 @@ Log saved - check Push Log tab`
                       // Duplicate detection within this TAN's Books rows
                       const invKey = (r.invoiceNo||"").trim().toUpperCase();
                       const isDupInv = invKey && bk.filter(x=>(x.invoiceNo||"").trim().toUpperCase()===invKey).length > 1;
-                      const rowBg     = grp ? PAIR_COLORS[ci] : isPendingSel ? "#fffbe6" : isDupInv ? "#fff8e8" : "transparent";
-                      const rowOutline = grp ? `2px solid ${PAIR_BORDER[ci]}` : isPendingSel ? "2px solid #d59300" : isDupInv ? "2px solid #f0c040" : "2px solid transparent";
+                      const reversed  = isReversed(r);
+                      const rowBg     = reversed ? "#f3f3f3" : grp ? PAIR_COLORS[ci] : isPendingSel ? "#fffbe6" : isDupInv ? "#fff8e8" : "transparent";
+                      const rowOutline = reversed ? "2px solid #909090" : grp ? `2px solid ${PAIR_BORDER[ci]}` : isPendingSel ? "2px solid #d59300" : isDupInv ? "2px solid #f0c040" : "2px solid transparent";
+                      const cellStyle = reversed ? {textDecoration:"line-through",color:"#909090",opacity:0.85} : {};
                       return (
-                        <tr key={r.id} onClick={()=>handleBkClick(r.id)}
-                          style={{cursor:"pointer",background:rowBg,outline:rowOutline,outlineOffset:"-2px"}}
-                          title={grp?"Click to remove from group":isPendingSel?"Click to deselect":isDupInv?"Duplicate invoice number — click to select":"Click to select"}>
+                        <tr key={r.id} onClick={()=>{ if(reversed) return; handleBkClick(r.id); }}
+                          style={{cursor:reversed?"default":"pointer",background:rowBg,outline:rowOutline,outlineOffset:"-2px"}}
+                          title={reversed?`Marked as reversed — excluded from totals & reconciliation`:grp?"Click to remove from group":isPendingSel?"Click to deselect":isDupInv?"Duplicate invoice number — click to select":"Click to select"}>
                           <td style={{width:24,textAlign:"center"}}>
-                            {grp
+                            {reversed
+                              ? <span title="Reversed" style={{display:"inline-block",width:18,height:18,borderRadius:9,background:"#909090",color:"#fff",fontSize:12,lineHeight:"18px",textAlign:"center"}}>↶</span>
+                              : grp
                               ? <span style={{display:"inline-block",width:18,height:18,borderRadius:9,background:PAIR_BORDER[ci],color:"#fff",fontSize:9,fontWeight:700,lineHeight:"18px",textAlign:"center"}}>✓{grp.groupNo}</span>
                               : isPendingSel
                               ? <span style={{display:"inline-block",width:18,height:18,borderRadius:9,background:"#d59300",color:"#fff",fontSize:12,lineHeight:"18px",textAlign:"center"}}>✔</span>
                               : <span style={{display:"inline-block",width:18,height:18,borderRadius:9,border:"1.5px solid var(--bd)",background:"#fff"}}/>}
                           </td>
-                          <td style={{color:"#aaa"}}>{i+1}</td>
-                          <td style={{fontFamily:"Consolas,monospace",fontSize:11}} title={r.date?`Txn: ${r.date}`:""}>{r.invoiceDate||r.date||"—"}</td>
-                          <td style={{fontSize:11,maxWidth:150,overflow:"hidden",textOverflow:"ellipsis"}} title={r.invoiceNo}>
+                          <td style={{color:"#aaa",...cellStyle}}>{i+1}</td>
+                          <td style={{fontFamily:"Consolas,monospace",fontSize:11,...cellStyle}} title={r.date?`Txn: ${r.date}`:""}>{r.invoiceDate||r.date||"—"}</td>
+                          <td style={{fontSize:11,maxWidth:150,overflow:"hidden",textOverflow:"ellipsis",...cellStyle}} title={r.invoiceNo}>
                             <span style={{display:"flex",alignItems:"center",gap:4}}>
-                              <span style={{color:"var(--a)",overflow:"hidden",textOverflow:"ellipsis"}}>{r.invoiceNo||"—"}</span>
-                              {isDupInv&&<span style={{flexShrink:0,fontSize:8,fontWeight:700,padding:"1px 4px",borderRadius:2,background:"#d59300",color:"#fff",letterSpacing:0.3}}>DUP</span>}
+                              <span style={{color:reversed?"#909090":"var(--a)",overflow:"hidden",textOverflow:"ellipsis"}}>{r.invoiceNo||"—"}</span>
+                              {isDupInv&&!reversed&&<span style={{flexShrink:0,fontSize:8,fontWeight:700,padding:"1px 4px",borderRadius:2,background:"#d59300",color:"#fff",letterSpacing:0.3}}>DUP</span>}
+                              {reversed&&<span style={{flexShrink:0,fontSize:8,fontWeight:700,padding:"1px 5px",borderRadius:2,background:"#909090",color:"#fff",letterSpacing:0.3,textDecoration:"none"}} title={`Reversal ref: ${reversedEntries[getReversalKey(r)]?.reversalRef||"manual"}`}>↶ REVERSED</span>}
+                              {onMarkReversed && (r.journalEntry||r.id) && (reversed
+                                ? <button onClick={e=>{e.stopPropagation();if(window.confirm(`Un-mark "${r.invoiceNo||r.journalEntry}" as reversed?`)) onUnmarkReversed(r);}} title="Un-mark this row" style={{flexShrink:0,padding:"0px 4px",borderRadius:2,border:"1px solid #909090",background:"#fff",color:"#666",cursor:"pointer",fontSize:9,fontFamily:"inherit",textDecoration:"none",marginLeft:2}}>Undo</button>
+                                : <button onClick={e=>{e.stopPropagation();const ref=window.prompt(`Mark this Books row as REVERSED?\n\nInvoice: ${r.invoiceNo||"(none)"}\nTDS: ₹${(r.tdsDeducted||0).toLocaleString("en-IN")}\nOdoo Ref: ${r.journalEntry||"(none)"}\n\nReversal journal entry ref (e.g. TDS/2024/3493) — optional:`,"");if(ref===null)return;onMarkReversed(r,ref);}} title="Mark this Books row as reversed (excludes from totals & recon)" style={{flexShrink:0,padding:"0px 4px",borderRadius:2,border:"1px solid #ccc",background:"#fafafa",color:"#888",cursor:"pointer",fontSize:9,fontFamily:"inherit",marginLeft:2}}>↶ Rev</button>
+                              )}
                             </span>
                           </td>
-                          <td>{r.section?<span className="tg tg-sec">{r.section}</span>:"—"}</td>
-                          <td>{r.quarter?<span className="tg tg-q">{r.quarter}</span>:"—"}</td>
-                          <td style={{textAlign:"right",fontFamily:"Consolas,monospace",fontSize:11,color:"var(--grn)",fontWeight:600}}>{fmt(r.tdsDeducted)}</td>
+                          <td style={cellStyle}>{r.section?<span className="tg tg-sec" style={reversed?{opacity:0.55}:{}}>{r.section}</span>:"—"}</td>
+                          <td style={cellStyle}>{r.quarter?<span className="tg tg-q" style={reversed?{opacity:0.55}:{}}>{r.quarter}</span>:"—"}</td>
+                          <td style={{textAlign:"right",fontFamily:"Consolas,monospace",fontSize:11,color:reversed?"#909090":"var(--grn)",fontWeight:600,...(reversed?{textDecoration:"line-through"}:{})}}>{fmt(r.tdsDeducted)}</td>
                         </tr>
                       );
                     })}</tbody>
@@ -2434,6 +2455,7 @@ Log saved - check Push Log tab`
               <div style={{display:"flex",alignItems:"center",gap:10}}>
                 {groups.length>0 && <span style={{fontSize:11,color:"var(--grn)",fontWeight:600}}>✓ {[...matchedBkIds].length} matched</span>}
                 {selBk.size>0 && <span style={{fontSize:11,color:"#d59300",fontWeight:600}}>{selBk.size} selected</span>}
+                {reversedBkTDS>0 && <span style={{fontSize:11,color:"#909090",fontWeight:600}} title="TDS amount excluded due to reversed rows">↶ ₹{reversedBkTDS.toLocaleString("en-IN",{minimumFractionDigits:2})} reversed</span>}
                 <span style={{fontFamily:"Consolas,monospace",fontWeight:700,color:"var(--grn)",fontSize:13}}>₹{bkTDS.toLocaleString("en-IN",{minimumFractionDigits:2})}</span>
               </div>
             </div>
@@ -2672,7 +2694,7 @@ const mkCompany = (name, meta={}) => ({
   ...meta, 
   years: {} 
 });
-const mkYear = () => ({ datasets:{"26AS":[],"AIS":[],"Books":[]}, files:[], reconResults:[], reconDone:false, tanMaster:[], prevMissingInBooks:[] });
+const mkYear = () => ({ datasets:{"26AS":[],"AIS":[],"Books":[]}, files:[], reconResults:[], reconDone:false, tanMaster:[], prevMissingInBooks:[], reversedEntries:{} });
 
 export default function App() {
   const [view, setView] = useState("home");
@@ -2746,6 +2768,7 @@ export default function App() {
   const reconDone = curYearData.reconDone;
   const tanMaster = curYearData.tanMaster;
   const prevMissingInBooks = curYearData.prevMissingInBooks || [];
+  const reversedEntries = curYearData.reversedEntries || {}; // { [journalEntry]: { reversalRef, note, markedAt } }
 
   // Migrate old TAN Master format to new format (contactPerson/contactPhone -> ccEmail/csmName)
   useEffect(() => {
@@ -2797,6 +2820,30 @@ export default function App() {
   const setReconDone = useCallback(val => updateCurYear(yd => ({ reconDone: typeof val==="function"?val(yd.reconDone):val })), [updateCurYear]);
   const setTanMaster = useCallback(val => updateCurYear(yd => ({ tanMaster: typeof val==="function"?val(yd.tanMaster):val })), [updateCurYear]);
   const setPrevMissingInBooks = useCallback(val => updateCurYear(yd => ({ prevMissingInBooks: typeof val==="function"?val(yd.prevMissingInBooks):val })), [updateCurYear]);
+  const setReversedEntries = useCallback(val => updateCurYear(yd => ({ reversedEntries: typeof val==="function"?val(yd.reversedEntries||{}):val })), [updateCurYear]);
+
+  // Helpers for the reversed-entry feature
+  const getRowReversalKey = (row) => row?.journalEntry || (row?.id ? `id:${row.id}` : null);
+  const isRowReversed = (row) => {
+    const k = getRowReversalKey(row);
+    return !!(k && reversedEntries[k]);
+  };
+  const filterOutReversed = (arr) => arr.filter(r => !isRowReversed(r));
+  const markRowReversed = (row, reversalRef) => {
+    const k = getRowReversalKey(row);
+    if (!k) { showToast("Row has no Odoo journal entry — can't mark as reversed", "w"); return; }
+    setReversedEntries(prev => ({ ...prev, [k]: { reversalRef: (reversalRef||"").trim(), note:"", markedAt: new Date().toISOString() } }));
+    setReconDone(false); // recon must be re-run to reflect exclusion
+    showToast(`Marked as reversed: ${row.invoiceNo||k}${reversalRef?` (rev: ${reversalRef})`:""}`, "s");
+    addLog(`↶ Marked Books row as reversed — ${row.invoiceNo||""} · ${k}${reversalRef?` (reversal: ${reversalRef})`:""}`, "s");
+  };
+  const unmarkRowReversed = (row) => {
+    const k = getRowReversalKey(row);
+    if (!k) return;
+    setReversedEntries(prev => { const next = {...prev}; delete next[k]; return next; });
+    setReconDone(false);
+    showToast(`Unmarked: ${row.invoiceNo||k} (now included in reconciliation)`, "s");
+  };
 
   // ── COMPANY MANAGEMENT ───────────────────────────────────────────────────────
   const addCompany = () => {
@@ -4965,7 +5012,7 @@ export default function App() {
     // Snapshot TANs that were "Missing in Books" before this run — used to highlight newly-resolved entries
     const currentMib = reconResults.filter(r=>r.matchStatus==="Missing in Books").map(r=>r.tan);
     if (currentMib.length > 0) setPrevMissingInBooks(currentMib);
-    const results = runMatchingEngine(datasets["26AS"], datasets["Books"]);
+    const results = runMatchingEngine(datasets["26AS"], filterOutReversed(datasets["Books"]));
     setReconResults(results); setReconDone(true); setView("recon");
     const matched = results.filter(r=>r.matchStatus==="Matched").length;
     const mismatch = results.filter(r=>r.matchStatus==="Excess in Books").length;
@@ -5288,12 +5335,12 @@ export default function App() {
     if (dateFrom || dateTo) { const d = parseDate(r.date); if (d) { if (dateFrom && d < new Date(dateFrom)) return false; if (dateTo && d > new Date(dateTo + "T23:59:59")) return false; } }
     return true;
   });
-  const liveResults = reconDone ? runMatchingEngine(filterTxns(datasets["26AS"]), filterTxns(datasets["Books"])) : [];
+  const liveResults = reconDone ? runMatchingEngine(filterTxns(datasets["26AS"]), filterTxns(filterOutReversed(datasets["Books"]))) : [];
   // TANs that were previously Missing in Books but now have entries — for green highlight
   const resolvedTANs = new Set(
     prevMissingInBooks.filter(tan => liveResults.find(r => r.tan===tan && r.matchStatus!=="Missing in Books"))
   );
-  const liveSectionResults = reconDone ? runSectionMatchingEngine(filterTxns(datasets["26AS"]), filterTxns(datasets["Books"])) : [];
+  const liveSectionResults = reconDone ? runSectionMatchingEngine(filterTxns(datasets["26AS"]), filterTxns(filterOutReversed(datasets["Books"]))) : [];
   // All unique sections across both datasets
   const allSections = [...new Set([...datasets["26AS"],...datasets["Books"]].map(r=>r.section?.toUpperCase()?.trim()).filter(Boolean))].sort();
   const sectionFiltered = liveSectionResults.filter(r => {
@@ -6951,11 +6998,11 @@ export default function App() {
                             const tdsRate = taxableVal > 0 ? ((row.tdsDeducted||0) / taxableVal * 100) : null;
                             const odooRefData = invKey ? (odooRefs[invKey] || null) : null;
                             return (
-                            <tr key={row.id} className={selRows.has(row.id)?"sel":""} onClick={()=>toggleRow(row.id)}
-                              style={isDup&&!selRows.has(row.id)?{background:"#fff8e8"}:{}}>
+                            <tr key={row.id} className={`${selRows.has(row.id)?"sel":""} ${isRowReversed(row)?"row-reversed":""}`} onClick={()=>toggleRow(row.id)}
+                              style={isRowReversed(row)?{}:(isDup&&!selRows.has(row.id)?{background:"#fff8e8"}:{})}>
                               <td><input type="checkbox" className="cb3" checked={selRows.has(row.id)} onChange={()=>toggleRow(row.id)} onClick={e=>e.stopPropagation()}/></td>
                               <td style={{color:"#aaa"}}>{row.id}</td>
-                              <td title={row.deductorName} style={{fontWeight:500}}>{row.deductorName||"—"}</td>
+                              <td title={row.deductorName} style={{fontWeight:500}}>{row.deductorName||"—"}{isRowReversed(row)&&<span className="rev-badge" title={`Reversed: ${reversedEntries[getRowReversalKey(row)]?.reversalRef||"manual"}`}>↶ REVERSED</span>}</td>
                               <td><span
                                   onClick={e=>{ e.stopPropagation(); if(row.tan){ setRemapTanDlg({ oldTan: row.tan, newTan:"", scopes:{ "26AS":selDS==="26AS", AIS:selDS==="AIS", Books:selDS==="Books", Invoices:selDS==="Invoices" } }); } }}
                                   title={row.tan?`Click to remap ${row.tan} to a different TAN (fixes wrong TANs in source data)`:"No TAN on this row"}
@@ -6979,7 +7026,24 @@ export default function App() {
                               {selDS==="Books"&&<td className="num" style={{color:taxableVal>0?"#107c10":"var(--tx3)",fontSize:11}}>{taxableVal>0?`₹${taxableVal.toLocaleString("en-IN",{minimumFractionDigits:2})}`:"—"}</td>}
                               {selDS==="Books"&&<td className="num" style={{fontSize:11,color:amtDue===null?"var(--tx3)":amtDue>0?"#d59300":"#107c10",fontWeight:amtDue!=null?600:400}}>{amtDue===null?"—":amtDue>0?`₹${amtDue.toLocaleString("en-IN",{minimumFractionDigits:2})}`:<span style={{color:"#107c10"}}>Paid ✓</span>}</td>}
                               {selDS==="Books"&&<td style={{textAlign:"right",fontSize:11,fontWeight:600,color:tdsRate===null?"var(--tx3)":tdsRate>10.5?"#a80000":"#5c2d91"}}>{tdsRate===null?"—":`${tdsRate.toFixed(1)}%`}</td>}
-                              {selDS==="Books"&&<td style={{fontSize:10,fontFamily:"Consolas,monospace"}}>{odooRefData?<span style={{color:"#5c2d91",fontWeight:600}} title={`Created: ${odooRefData.createdAt?.slice(0,10)||"?"}`}>{odooRefData.odooRef||`ID:${odooRefData.moveId}`}</span>:row.journalEntry?<span style={{color:"#5c2d91",fontWeight:500}} title="Synced from Odoo">{row.journalEntry}</span>:<span style={{color:"#ccc"}}>—</span>}</td>}
+                              {selDS==="Books"&&<td style={{fontSize:10,fontFamily:"Consolas,monospace"}}>
+                                <span style={{display:"flex",alignItems:"center",gap:6}}>
+                                  <span style={{flex:1,minWidth:0,overflow:"hidden",textOverflow:"ellipsis"}}>{odooRefData?<span style={{color:"#5c2d91",fontWeight:600}} title={`Created: ${odooRefData.createdAt?.slice(0,10)||"?"}`}>{odooRefData.odooRef||`ID:${odooRefData.moveId}`}</span>:row.journalEntry?<span style={{color:"#5c2d91",fontWeight:500}} title="Synced from Odoo">{row.journalEntry}</span>:<span style={{color:"#ccc"}}>—</span>}</span>
+                                  {(row.journalEntry||row.id)&&(isRowReversed(row)
+                                    ? <button onClick={e=>{e.stopPropagation();if(window.confirm(`Un-mark "${row.invoiceNo||row.journalEntry}" as reversed?\n\nThis row will be included in reconciliation again.`)) unmarkRowReversed(row);}}
+                                        title={`Currently marked as reversed (ref: ${reversedEntries[getRowReversalKey(row)]?.reversalRef||"manual"}). Click to undo.`}
+                                        style={{flexShrink:0,padding:"1px 6px",borderRadius:3,border:"1px solid #909090",background:"#fff",color:"#666",cursor:"pointer",fontSize:10,fontFamily:"inherit",textDecoration:"none"}}>↶ Undo</button>
+                                    : <button onClick={e=>{
+                                        e.stopPropagation();
+                                        const ref = window.prompt(`Mark this Books row as REVERSED?\n\nInvoice: ${row.invoiceNo||"(none)"}\nTDS: ₹${(row.tdsDeducted||0).toLocaleString("en-IN")}\nOdoo Ref: ${row.journalEntry||"(none)"}\n\nEnter the REVERSAL journal entry reference (e.g. TDS/2024/3493) — optional but recommended for audit:`,"");
+                                        if (ref===null) return; // cancelled
+                                        markRowReversed(row, ref);
+                                      }}
+                                        title={`Mark as reversed (e.g. you've passed a reversal entry in Odoo). Reconciliation will skip this row.`}
+                                        style={{flexShrink:0,padding:"1px 6px",borderRadius:3,border:"1px solid #ccc",background:"#fafafa",color:"#888",cursor:"pointer",fontSize:10,fontFamily:"inherit"}}>↶ Mark Rev</button>
+                                  )}
+                                </span>
+                              </td>}
                               <td>{row.quarter?<span className="tg tg-q">{row.quarter}</span>:"—"}</td>
                               {selDS!=="Books"&&<><td>{row.financialYear||"—"}</td><td><span style={{fontFamily:"Consolas,monospace",fontSize:10,color:row.bookingStatus==="F"?"var(--grn)":"var(--amb)"}}>{row.bookingStatus||"—"}</span></td></>}
                               <td><span className={`tg ${row.matchStatus==="Matched"?"tg-m":row.matchStatus==="Excess in Books"?"tg-mm":"tg-um"}`}>{row.matchStatus}</span></td>
@@ -7001,6 +7065,7 @@ export default function App() {
                           </span>
                         </div>
                       )}
+                      {selDS==="Books"&&(()=>{ const revCount=activeData.filter(r=>isRowReversed(r)).length; const revTDS=activeData.filter(r=>isRowReversed(r)).reduce((s,r)=>s+(r.tdsDeducted||0),0); return revCount>0?(<div className="si" style={{borderLeft:"2px solid #909090",paddingLeft:8,color:"#666"}} title="Books rows marked as reversed — excluded from reconciliation">↶ Reversed: <span className="sv2" style={{color:"#666",fontWeight:700}}>{revCount} row{revCount!==1?"s":""} · ₹{revTDS.toLocaleString("en-IN",{minimumFractionDigits:2})}</span></div>):null; })()}
                     </div>
                   </>
                 )}
@@ -7176,7 +7241,7 @@ export default function App() {
             )}
 
             {detailTAN&&(
-              <TanDetailModal tan={detailTAN} tanRow={liveResults.find(r=>r.tan===detailTAN)} txns26AS={datasets["26AS"]} txnsBooks={datasets["Books"]} txnsInvoices={datasets["Invoices"]||[]} onClose={()=>setDetailTAN(null)} fmt={fmt} FmtDiff={FmtDiff} odooUrl={curCompany.odooUrl || companies.find(c=>c.odooEnabled&&c.odooUrl)?.odooUrl || ''} odooConfig={curCompany.odooEnabled ? {url:curCompany.odooUrl,database:curCompany.odooDatabase,username:curCompany.odooUsername,password:curCompany.odooPassword} : (()=>{const oc=companies.find(c=>c.odooEnabled&&c.odooUrl);return oc?{url:oc.odooUrl,database:oc.odooDatabase,username:oc.odooUsername,password:oc.odooPassword}:null;})() } tanMaster={tanMaster} odooRefs={odooRefs} setOdooRefs={setOdooRefs} setOdooLog={setOdooLog}/>
+              <TanDetailModal tan={detailTAN} tanRow={liveResults.find(r=>r.tan===detailTAN)} txns26AS={datasets["26AS"]} txnsBooks={datasets["Books"]} txnsInvoices={datasets["Invoices"]||[]} onClose={()=>setDetailTAN(null)} fmt={fmt} FmtDiff={FmtDiff} odooUrl={curCompany.odooUrl || companies.find(c=>c.odooEnabled&&c.odooUrl)?.odooUrl || ''} odooConfig={curCompany.odooEnabled ? {url:curCompany.odooUrl,database:curCompany.odooDatabase,username:curCompany.odooUsername,password:curCompany.odooPassword} : (()=>{const oc=companies.find(c=>c.odooEnabled&&c.odooUrl);return oc?{url:oc.odooUrl,database:oc.odooDatabase,username:oc.odooUsername,password:oc.odooPassword}:null;})() } tanMaster={tanMaster} odooRefs={odooRefs} setOdooRefs={setOdooRefs} setOdooLog={setOdooLog} reversedEntries={reversedEntries} onMarkReversed={markRowReversed} onUnmarkReversed={unmarkRowReversed} getReversalKey={getRowReversalKey}/>
             )}
 
             {/* TDS Details Popup for Invoices Tab */}
