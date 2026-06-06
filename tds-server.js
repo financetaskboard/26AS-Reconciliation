@@ -357,6 +357,52 @@ app.post('/api/odoo/test', async (req, res) => {
   }
 });
 
+/**
+ * Detect which of the given move IDs have been reversed via Odoo's
+ * "Reverse Entry" wizard (and the reversal itself is posted).
+ *
+ * Returns: { "TDS/2024/2601": "TDS/2024/3493", ... }   originalMoveName → reversalMoveName
+ *
+ * Safe to fail: returns {} on any error, so the sync continues without
+ * reversal annotations rather than dying.
+ */
+async function detectReversedMoves(session, moveIds) {
+  if (!moveIds || moveIds.length === 0) return {};
+  try {
+    // Pass 1: find posted reversals whose reversed_entry_id is in moveIds
+    const reversals = await odooCall(session, 'account.move', 'search_read',
+      [[['reversed_entry_id', 'in', moveIds], ['state', '=', 'posted']]],
+      { fields: ['id', 'name', 'reversed_entry_id'] });
+
+    const map = {};
+    for (const rev of reversals) {
+      if (Array.isArray(rev.reversed_entry_id) && rev.reversed_entry_id.length >= 2) {
+        map[rev.reversed_entry_id[1]] = rev.name;
+      }
+    }
+
+    // Pass 2: drop entries whose reversal has itself been reversed (un-reversal).
+    const reversalIds = reversals.map(r => r.id).filter(Boolean);
+    if (reversalIds.length > 0) {
+      const counter = await odooCall(session, 'account.move', 'search_read',
+        [[['reversed_entry_id', 'in', reversalIds], ['state', '=', 'posted']]],
+        { fields: ['name', 'reversed_entry_id'] });
+      for (const cr of counter) {
+        if (Array.isArray(cr.reversed_entry_id) && cr.reversed_entry_id.length >= 2) {
+          const reversedReversalName = cr.reversed_entry_id[1];
+          for (const [orig, revName] of Object.entries(map)) {
+            if (revName === reversedReversalName) delete map[orig];
+          }
+        }
+      }
+    }
+    return map;
+  } catch (e) {
+    console.warn('[Reversal detection] Failed:', e.message);
+    return {};
+  }
+}
+
 app.post('/api/odoo/sync-tds', async (req, res) => {
   try {
     const { url, db: database, username, apiKey, fyStart, fyEnd, tdsAccountCode, debtorAccountCode, prefixes } = req.body;
@@ -385,12 +431,54 @@ app.post('/api/odoo/sync-tds', async (req, res) => {
     }
 
     const prefixList = (prefixes || '').split(',').map(p => p.trim().toUpperCase()).filter(Boolean);
-    const filtered = prefixList.length > 0
-      ? allLines.filter(l => prefixList.includes((l.name||'').split('/')[0].toUpperCase()))
-      : allLines;
-    console.log(`   Filtered: ${filtered.length} of ${allLines.length}`);
+
+    // Pattern matches things that LOOK like an invoice reference, e.g.
+    // "SWB/25-26/0001" or "ABC/2026/0123" — two-plus uppercase letters,
+    // then '/', then digits. Free-form labels like "Excess TDS" do NOT match.
+    const looksLikeInvoiceRef = (name) => /^[A-Z]{2,8}\/\d{2,4}/.test((name || '').trim());
+
+    let manualJvCount = 0;
+    const filtered = allLines.filter(l => {
+      // If no prefix config was supplied, fall back to old behaviour (pass everything).
+      if (prefixList.length === 0) return true;
+
+      const name = (l.name || '').trim();
+      const prefix = name.split('/')[0].toUpperCase();
+
+      // Pass 1: known invoice prefix → regular Books entry.
+      if (prefixList.includes(prefix)) {
+        l._isManualJV = false;
+        return true;
+      }
+
+      // Pass 2: doesn't look like ANY invoice reference (no slash-formatted
+      // structure) → treat as a manual JV (Excess TDS, year-end adjustment, etc.).
+      // The line is already on this company's TDS Receivable account (account_id
+      // filter above) AND posted (parent_state filter above), so it's safe to
+      // include. Front-end renders an "EXCESS TDS" badge to distinguish these.
+      if (!looksLikeInvoiceRef(name)) {
+        l._isManualJV = true;
+        manualJvCount++;
+        return true;
+      }
+
+      // Looks like an invoice with an unknown prefix — silently drop, same as
+      // before. Probably belongs to a different company sharing the same
+      // database, or a missing prefix config.
+      return false;
+    });
+    console.log(`   Filtered: ${filtered.length} of ${allLines.length}${manualJvCount > 0 ? ` (incl. ${manualJvCount} manual JV)` : ''}`);
 
     const moveIds = [...new Set(filtered.map(l => l.move_id?.[0]).filter(Boolean))];
+
+    // Detect reversed entries (Odoo "Reverse Entry" wizard) so the frontend
+    // can mark them as reversed and exclude them from reconciliation totals.
+    const reversalMap = await detectReversedMoves(session, moveIds);
+    const reversedCount = Object.keys(reversalMap).length;
+    if (reversedCount > 0) {
+      console.log(`   ↶ Detected ${reversedCount} reversed move(s)`);
+    }
+
     const invoiceAmounts = {};
     const invoiceDates = {}; // Store invoice dates
     
@@ -413,15 +501,27 @@ app.post('/api/odoo/sync-tds', async (req, res) => {
     const data = filtered.map(l => {
       const moveId = l.move_id?.[0];
       const invDate = invoiceDates[moveId] || '';
+      const journalEntry = l.move_id?.[1] || '';
+      const reversalRef = journalEntry ? reversalMap[journalEntry] : null;
       return {
         deductorName: l.partner_id?.[1]||'', tan: '',
         amount: invoiceAmounts[moveId]||0, tdsDeducted: l.debit||0,
         section: '', date: l.date||'', invoiceDate: invDate, invoiceNo: l.name||'',
         quarter: getQ(invDate || l.date), source: 'Odoo ERP',
-        journalEntry: l.move_id?.[1]||'', odooCompany: l.company_id?.[1]||''
+        journalEntry, odooCompany: l.company_id?.[1]||'',
+        // Manual JV (Excess TDS, adjustments) — frontend shows orange badge.
+        ...(l._isManualJV ? { manualJV: true, manualJvLabel: (l.name || '').trim() || 'Manual JV' } : {}),
+        // Reversed via Odoo "Reverse Entry" wizard — frontend auto-marks and excludes from recon.
+        ...(reversalRef ? { reversed: true, reversal_ref: reversalRef } : {})
       };
     });
-    console.log(`✅ TDS Sync: ${data.length} records via ${session.mode}`);
+    const manualJvInData = data.filter(r => r.manualJV).length;
+    const reversedInData = data.filter(r => r.reversed).length;
+    const extras = [];
+    if (manualJvInData > 0) extras.push(`${manualJvInData} manual JV`);
+    if (reversedInData > 0) extras.push(`${reversedInData} reversed`);
+    const extrasStr = extras.length > 0 ? ` (${extras.join(', ')})` : '';
+    console.log(`✅ TDS Sync: ${data.length} records${extrasStr} via ${session.mode}`);
     res.json({ ok: true, count: data.length, total: allLines.length, data });
   } catch (e) {
     console.error('❌ TDS sync:', e.message);
